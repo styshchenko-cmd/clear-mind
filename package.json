@@ -1,0 +1,14 @@
+{
+  "name": "clear-mind",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ClearMind browser extension: block, time-limit and tidy distracting sites. All data stays local.",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/*.test.js",
+    "e2e": "node scripts/build.mjs chrome && node scripts/e2e.mjs",
+    "lists": "node scripts/fetch-lists.mjs"
+  },
+  "license": "MIT"
+}
