@@ -58,7 +58,7 @@ PRIVATE BY DESIGN
 
 | Field | File |
 | --- | --- |
-| Store icon (128×128) | `src/icons/icon-128.png` |
+| Store icon (128×128) | `store-icon-128.png` (96×96 artwork, 16 px transparent padding) |
 | Screenshot 1 | `screenshot-1-block-page.png` |
 | Screenshot 2 | `screenshot-2-popup.png` |
 | Screenshot 3 | `screenshot-3-stats.png` |
