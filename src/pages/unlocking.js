@@ -56,7 +56,7 @@ if (!unlock.ok) {
   });
 
   $('keep').addEventListener('click', async () => {
-    await send('revokeUnlock', { domain: unlock.domain });
+    await send('revokeUnlock', { domain: unlock.domain, category: unlock.category });
     location.replace(blockPage);
   });
 }

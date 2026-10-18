@@ -26,15 +26,15 @@ export function loadList(id) {
   return loaded.get(id);
 }
 
-// The first of `ids` whose list covers host, as {category, domain}, or null.
-export async function matchCategory(host, ids) {
+// Every one of `ids` whose list covers host, as [{category, domain}].
+export async function matchCategories(host, ids) {
+  const matches = [];
   for (const id of ids) {
     const list = await loadList(id);
-    for (const candidate of suffixes(host)) {
-      if (list.has(candidate)) return { category: id, domain: candidate };
-    }
+    const domain = [...suffixes(host)].find((candidate) => list.has(candidate));
+    if (domain) matches.push({ category: id, domain });
   }
-  return null;
+  return matches;
 }
 
 // How a configured site overlaps a category list: `covering` is the list entry

@@ -69,8 +69,12 @@ export function usageTone(fraction) {
 }
 
 // Message to the background; resolves with its reply.
-export function send(type, payload = {}) {
-  return api.runtime.sendMessage({ type, ...payload });
+export async function send(type, payload = {}) {
+  try {
+    return (await api.runtime.sendMessage({ type, ...payload })) ?? { ok: false, error: 'no reply' };
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? error) };
+  }
 }
 
 export function readLocal(keys) {

@@ -3,7 +3,7 @@
 
 import { api } from '../lib/api.js';
 import { findSiteDomain, hostOf, matchesDomain } from '../lib/domain.js';
-import { listOverlap, loadList, matchCategory, listSizes } from '../lib/lists.js';
+import { listOverlap, loadList, matchCategories, listSizes } from '../lib/lists.js';
 import * as model from '../lib/model.js';
 import { hashPassword, verifyPassword, MIN_PASSWORD_LENGTH } from '../lib/password.js';
 import { decide, redirectTarget, sanitizeSite } from '../lib/rules.js';
@@ -54,13 +54,22 @@ async function session() {
 }
 
 const saveSession = () => api.storage.session.set(sess);
-const saveLocal = (...keys) => api.storage.local.set(Object.fromEntries(keys.map((k) => [k, local[k]])));
+// Our own writes come back through storage.onChanged, possibly after newer
+// in-memory changes; count them so only outside writes refresh the cache.
+const ownWrites = {};
+const saveLocal = (...keys) => {
+  for (const k of keys) ownWrites[k] = (ownWrites[k] ?? 0) + 1;
+  return api.storage.local.set(Object.fromEntries(keys.map((k) => [k, local[k]])));
+};
 
 api.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && local) {
-    for (const [key, { newValue }] of Object.entries(changes)) {
-      if (key in local && newValue !== undefined) local[key] = key === 'auto' ? model.normalizeAuto(newValue) : newValue;
+  if (area !== 'local') return;
+  for (const [key, { newValue }] of Object.entries(changes)) {
+    if (ownWrites[key]) {
+      ownWrites[key] -= 1;
+      continue;
     }
+    if (local && key in local && newValue !== undefined) local[key] = key === 'auto' ? model.normalizeAuto(newValue) : newValue;
   }
 });
 
@@ -92,10 +101,14 @@ function categoryMs(id, now) {
   return sess.active?.category === id ? stored + runningMs(now) : stored;
 }
 
-// The active category covering host, with its limit when it is time-limited.
+// The strictest active category covering host (a domain can be in several
+// lists), with its limit when it is time-limited.
+const STRICTNESS = { full: 3, window: 2, limit: 1 };
 async function categoryMatch(host, now) {
   const ids = model.activeCategories(local.auto, now);
-  const match = ids.length ? await matchCategory(host, ids) : null;
+  const matches = ids.length ? await matchCategories(host, ids) : [];
+  const mode = (m) => local.auto.categories[m.category].mode;
+  const match = matches.sort((a, b) => STRICTNESS[mode(b)] - STRICTNESS[mode(a)])[0];
   if (!match) return null;
   const config = local.auto.categories[match.category];
   return config.mode === 'limit' ? { ...match, limitMin: config.limitMin } : match;
@@ -140,11 +153,9 @@ async function enforce(tabId, url) {
     await saveLocal('days');
   }
   recentBlocks.set(tabId, { url, at: now });
-  const wouldBlock = (host) => {
-    const domain = findSiteDomain(host, local.sites);
-    return Boolean(domain && local.sites[domain].mode !== 'watch');
-  };
-  const target = redirectTarget(decision.site, wouldBlock) ?? blockPageUrl(decision, url);
+  const redirectUrl = decision.site?.show === 'redirect' ? decision.site.redirectUrl : '';
+  const redirectBlocked = hostOf(redirectUrl) ? (await evaluate(tabId, redirectUrl, now)).action === 'block' : false;
+  const target = redirectTarget(decision.site, () => redirectBlocked) ?? blockPageUrl(decision, url);
   await api.tabs.update(tabId, { url: target }).catch(() => {});
   return decision;
 }
@@ -217,6 +228,7 @@ async function updateBadgeAndAlarm(now) {
     await api.action.setBadgeBackgroundColor({ color: '#e8b45a' });
     await api.action.setBadgeText({ text: `${Math.max(0, Math.ceil(left / MINUTE))}m` });
     if (left > 0) await api.alarms.create(LIMIT_ALARM, { when: now + left + 500 });
+    else await api.alarms.clear(LIMIT_ALARM);
     return;
   }
   await api.action.setBadgeText({ text: '' });
@@ -259,7 +271,9 @@ async function tabInfo(tabId) {
   const tab = await api.tabs.get(tabId).catch(() => null);
   if (!tab?.url) return { tab, url: null };
   if (tab.url.startsWith(PAGES)) {
-    const params = new URL(tab.url).searchParams;
+    let params = new URL(tab.url).searchParams;
+    // The cooldown page carries its block page's URL in `back`.
+    if (params.has('back')) params = new URL(params.get('back'), PAGES).searchParams;
     return { tab, url: params.get('u'), page: true, domain: params.get('d'), category: params.get('c') };
   }
   return { tab, url: tab.url };
@@ -395,10 +409,17 @@ const handlers = {
   },
 
   // Unlocking page: "[ keep it blocked ]" after the cooldown.
-  async revokeUnlock({ domain }, sender) {
+  async revokeUnlock({ domain, category }, sender) {
+    await load();
     await session();
     delete sess.grants[sender.tab.id]?.[domain];
     await saveSession();
+    const day = local.days[dayKey()];
+    const entry = category ? day?.categories[category] : day?.sites[domain];
+    if (entry?.unlocks) {
+      entry.unlocks -= 1;
+      await saveLocal('days');
+    }
     return { ok: true };
   },
 

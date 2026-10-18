@@ -108,6 +108,20 @@ test('decide: categories apply only to sites without their own rule', () => {
   assert.equal(decide({ ...ctx, host: 'reddit.com' }).action, 'allow');
 });
 
+test('decide: "block this site" (forced) also blocks a watch-only site', () => {
+  const ctx = base({ mode: 'watch' });
+  ctx.day.forced['reddit.com'] = true;
+  assert.equal(decide(ctx).reason, 'manual');
+  assert.equal(decide({ ...ctx, granted: () => true }).action, 'allow');
+});
+
+test('sanitizeSite rejects redirects that are not real web addresses', () => {
+  const limits = { minCooldown: 5, maxCooldown: 300 };
+  for (const bad of ['ftp://x.com/a', 'reddit', 'javascript:alert(1)']) {
+    assert.ok(sanitizeSite({ ...newSite('x.com'), show: 'redirect', redirectUrl: bad }, limits).error, bad);
+  }
+});
+
 test('redirectTarget refuses redirects into another blocked site', () => {
   const site = { show: 'redirect', redirectUrl: 'https://getpocket.com/saves' };
   assert.equal(redirectTarget(site, () => false), 'https://getpocket.com/saves');
@@ -198,6 +212,9 @@ test('underLimitStreak counts back to the first over-limit day', () => {
   const days = { '2026-10-14': day(25 * MINUTE), '2026-10-15': day(5 * MINUTE), '2026-10-17': day(20 * MINUTE), '2026-10-18': day(0) };
   assert.equal(underLimitStreak(days, new Date(2026, 9, 1).getTime(), now), 4);
   assert.equal(underLimitStreak(days, new Date(2026, 9, 17).getTime(), now), 2);
+  // The limit alarm fires a little late: a few seconds over is not "over".
+  days['2026-10-18'] = day(20 * MINUTE + 30_000);
+  assert.equal(underLimitStreak(days, new Date(2026, 9, 1).getTime(), now), 4);
 });
 
 test('summarize builds tiles, rows and a 7-day chart', () => {

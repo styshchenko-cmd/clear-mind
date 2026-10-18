@@ -86,6 +86,8 @@ ws.onmessage = ({ data }) => {
     const { resolve, reject } = waiting.get(msg.id);
     waiting.delete(msg.id);
     msg.error ? reject(new Error(`${msg.error.message}`)) : resolve(msg.result);
+  } else if (msg.method === 'Runtime.consoleAPICalled' && msg.params.type === 'error') {
+    errors.push(msg.params.args.map((a) => a.value ?? a.description).join(' '));
   } else if (msg.method === 'Runtime.exceptionThrown') {
     errors.push(msg.params.exceptionDetails.exception?.description ?? msg.params.exceptionDetails.text);
   }

@@ -20,9 +20,9 @@ export function decide({ host, sites, day, usedMs, categoryMs, granted, category
   const domain = findSiteDomain(host, sites);
   if (domain) {
     const site = sites[domain];
-    if (site.mode === 'watch') return { action: 'allow', domain, site, reason: 'watch' };
     if (granted(domain)) return { action: 'allow', domain, site, reason: 'unlocked' };
     if (day?.forced?.[domain]) return { action: 'block', domain, site, reason: 'manual' };
+    if (site.mode === 'watch') return { action: 'allow', domain, site, reason: 'watch' };
     if (site.mode === 'block') return { action: 'block', domain, site, reason: 'block' };
     if (usedMs(domain) >= site.limitMin * MINUTE) return { action: 'block', domain, site, reason: 'limit' };
     return { action: 'allow', domain, site, reason: 'within-limit' };
@@ -63,8 +63,8 @@ export function sanitizeSite(input, limits) {
   const show = input.show === 'redirect' ? 'redirect' : 'message';
   let redirectUrl = String(input.redirectUrl ?? '').trim();
   if (show === 'redirect') {
-    if (!/^https?:\/\//i.test(redirectUrl)) redirectUrl = 'https://' + redirectUrl;
-    if (!hostOf(redirectUrl)) return { error: 'Redirect needs a web address' };
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(redirectUrl)) redirectUrl = 'https://' + redirectUrl;
+    if (!normalizeDomain(hostOf(redirectUrl) ?? '')) return { error: 'Redirect needs a web address' };
   }
   const modify = {};
   for (const [key, on] of Object.entries(input.modify ?? {})) modify[key] = Boolean(on);

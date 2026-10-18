@@ -4,6 +4,9 @@ import { emptyDay, CATEGORIES } from './model.js';
 import { dayKey, lastDays, nextMidnight, parseDayKey, startOfDay, MINUTE } from './time.js';
 
 export const KEEP_DAYS = 400;
+// A limit is enforced by an alarm and a 30 s tick, so a day can end slightly
+// past it without the user going over; only more than this counts as over.
+const OVER_GRACE = MINUTE;
 
 function siteEntry(day, domain) {
   day.sites[domain] ??= { ms: 0, blocks: 0, unlocks: 0 };
@@ -31,6 +34,7 @@ export function addTime(days, { domain, category }, start, end, limitMin) {
     const entry = category ? categoryEntry(day, category) : siteEntry(day, domain);
     entry.ms += to - from;
     if (limitMin) entry.limitMin = limitMin;
+    else delete entry.limitMin;
     from = to;
   }
 }
@@ -61,12 +65,12 @@ function dayTotals(day) {
     ms += entry.ms;
     blocks += entry.blocks;
     unlocks += entry.unlocks;
-    if (entry.limitMin && entry.ms > entry.limitMin * MINUTE) over = true;
+    if (entry.limitMin && entry.ms > entry.limitMin * MINUTE + OVER_GRACE) over = true;
   }
   for (const entry of Object.values(day?.categories ?? {})) {
     blocks += entry.blocks;
     unlocks += entry.unlocks;
-    if (entry.limitMin && entry.ms > entry.limitMin * MINUTE) over = true;
+    if (entry.limitMin && entry.ms > entry.limitMin * MINUTE + OVER_GRACE) over = true;
   }
   return { ms, blocks, unlocks, over };
 }
@@ -102,7 +106,6 @@ export function summarize({ range, days, sites, auto, settings, now = Date.now()
     .filter((s) => s.mode === 'limit')
     .reduce((sum, s) => sum + s.limitMin * MINUTE, 0);
 
-  let ms = 0;
   let blocks = 0;
   let unlocks = 0;
   const perSite = {};
@@ -110,7 +113,6 @@ export function summarize({ range, days, sites, auto, settings, now = Date.now()
   for (const key of keys) {
     const day = days[key];
     const totals = dayTotals(day);
-    ms += totals.ms;
     blocks += totals.blocks;
     unlocks += totals.unlocks;
     for (const [domain, entry] of Object.entries(day?.sites ?? {})) {
@@ -147,6 +149,10 @@ export function summarize({ range, days, sites, auto, settings, now = Date.now()
     };
   });
 
+  // "Time on listed sites": what the rows below show.
+  const ms = siteRows.reduce((sum, r) => sum + r.ms, 0)
+    + categoryRows.filter((r) => r.config.mode === 'limit').reduce((sum, r) => sum + r.ms, 0);
+
   const chartKeys = lastDays(n === 30 ? 30 : 7, now);
   const chart = chartKeys.map((key) => {
     const totals = dayTotals(days[key]);
@@ -158,7 +164,7 @@ export function summarize({ range, days, sites, auto, settings, now = Date.now()
     allowedMs: allowedPerDay * n,
     blocks,
     unlocks,
-    streak: underLimitStreak(days, settings?.statsSince ?? now, now),
+    streak: allowedPerDay ? underLimitStreak(days, settings?.statsSince ?? now, now) : null,
     siteRows,
     categoryRows,
     chart,

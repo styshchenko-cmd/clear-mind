@@ -15,7 +15,7 @@ const site = info.site;
 
 document.title = `${domain} · blocked`;
 $('domain').textContent = domain;
-$('rule').textContent = category ? `${info.categoryLabel.toLowerCase()}: ${info.categoryRule}` : `rule: ${ruleLabel(site)}`;
+$('rule').textContent = category ? `${info.categoryLabel?.toLowerCase() ?? category}: ${info.categoryRule ?? ''}` : `rule: ${ruleLabel(site)}`;
 
 const REASONS = {
   block: 'You put this site on your block list.',

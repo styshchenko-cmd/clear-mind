@@ -109,7 +109,7 @@ function viewStats() {
     tile('time on listed sites', formatDuration(s.ms), s.allowedMs ? `of ${formatDuration(s.allowedMs)} allowed` : 'no daily limits set'),
     tile('blocks shown', s.blocks, 'times the block page appeared', 'red'),
     tile('unlocks', s.unlocks, 'password + cooldown', 'amber'),
-    tile('days under limit', s.streak, 'current streak', 'green'));
+    tile('days under limit', s.streak ?? '—', s.streak === null ? 'no daily limits set' : 'current streak', 'green'));
 
   const siteGrid = { gridTemplateColumns: 'minmax(120px, 1.2fr) minmax(0, 3fr) auto' };
   const siteRows = s.siteRows.map((row) => {
@@ -667,7 +667,12 @@ function viewSettings() {
 // ---------------------------------------------------------------- routing
 
 function route() {
-  const hash = decodeURIComponent(location.hash.slice(1));
+  let hash = '';
+  try {
+    hash = decodeURIComponent(location.hash.slice(1));
+  } catch {
+    // A malformed hash falls through to the default view.
+  }
   if (hash.startsWith('site/')) return { view: 'site', domain: normalizeDomain(hash.slice(5)) };
   if (hash.startsWith('auto/')) return { view: 'auto', category: hash.slice(5) };
   return { view: ['stats', 'sites', 'auto', 'settings', 'setup', 'help'].includes(hash) ? hash : 'stats' };
@@ -691,7 +696,9 @@ window.addEventListener('hashchange', () => {
 onLocalChange(async () => {
   data = await load();
   const view = route().view;
-  if (view === 'stats' || view === 'sites') render();
+  // Don't wipe what the user is typing or an open password prompt.
+  const busy = main.querySelector('.confirm') || main.contains(document.activeElement) && document.activeElement.matches('input, textarea');
+  if ((view === 'stats' || view === 'sites') && !busy) render();
   else renderSidebar(route());
 });
 
