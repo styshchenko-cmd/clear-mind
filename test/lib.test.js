@@ -1,0 +1,157 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { findSiteDomain, hostOf, normalizeDomain } from '../src/lib/domain.js';
+import { parseList } from '../src/lib/lists.js';
+import { autoLoosens, categoryActive, defaultAuto, loosens, newSite } from '../src/lib/model.js';
+import { hashPassword, verifyPassword } from '../src/lib/password.js';
+import { decide, redirectTarget, sanitizeSite } from '../src/lib/rules.js';
+import { addTime, summarize, underLimitStreak } from '../src/lib/stats.js';
+import { dayKey, formatClock, formatDuration, lastDays, MINUTE, HOUR } from '../src/lib/time.js';
+
+test('normalizeDomain accepts URLs and bare hosts', () => {
+  assert.equal(normalizeDomain('https://www.Reddit.com/r/x?y=1'), 'reddit.com');
+  assert.equal(normalizeDomain('news.ycombinator.com'), 'news.ycombinator.com');
+  assert.equal(normalizeDomain('  example.org:8080  '), 'example.org');
+  assert.equal(normalizeDomain('localhost'), 'localhost');
+  for (const bad of ['', 'not a domain', 'foo', '-bad-.com', null]) assert.equal(normalizeDomain(bad), null);
+});
+
+test('hostOf ignores non-web URLs', () => {
+  assert.equal(hostOf('https://old.reddit.com/r/all'), 'old.reddit.com');
+  assert.equal(hostOf('chrome://extensions'), null);
+  assert.equal(hostOf('chrome-extension://abc/pages/blocked.html'), null);
+  assert.equal(hostOf('garbage'), null);
+});
+
+test('findSiteDomain picks the most specific rule and respects label boundaries', () => {
+  const sites = { 'reddit.com': {}, 'old.reddit.com': {}, 'x.com': {} };
+  assert.equal(findSiteDomain('old.reddit.com', sites), 'old.reddit.com');
+  assert.equal(findSiteDomain('new.reddit.com', sites), 'reddit.com');
+  assert.equal(findSiteDomain('notreddit.com', sites), null);
+  assert.equal(findSiteDomain('box.com', sites), null);
+});
+
+const base = (overrides = {}) => ({
+  host: 'reddit.com',
+  sites: { 'reddit.com': { ...newSite('reddit.com'), ...overrides } },
+  day: { sites: {}, categories: {}, forced: {} },
+  usedMs: () => 0,
+  granted: () => false,
+  category: () => null,
+});
+
+test('decide: time limit allows until used up, then blocks', () => {
+  assert.equal(decide(base()).action, 'allow');
+  const over = decide({ ...base(), usedMs: () => 30 * MINUTE });
+  assert.deepEqual([over.action, over.reason], ['block', 'limit']);
+});
+
+test('decide: block mode, watch mode, unlocks and manual blocks', () => {
+  assert.equal(decide(base({ mode: 'block' })).reason, 'block');
+  assert.equal(decide({ ...base({ mode: 'watch' }), usedMs: () => 10 * HOUR }).action, 'allow');
+  assert.equal(decide({ ...base({ mode: 'block' }), granted: () => true }).reason, 'unlocked');
+  const forced = base();
+  forced.day.forced['reddit.com'] = true;
+  assert.equal(decide(forced).reason, 'manual');
+});
+
+test('decide: categories apply only to sites without their own rule', () => {
+  const ctx = { ...base({ mode: 'watch' }), host: 'pornsite.example', category: () => ({ category: 'adult', domain: 'pornsite.example' }) };
+  assert.deepEqual([decide(ctx).action, decide(ctx).category], ['block', 'adult']);
+  assert.equal(decide({ ...ctx, granted: (d) => d === 'pornsite.example' }).action, 'allow');
+  assert.equal(decide({ ...ctx, host: 'reddit.com' }).action, 'allow');
+});
+
+test('redirectTarget refuses redirects into another blocked site', () => {
+  const site = { show: 'redirect', redirectUrl: 'https://getpocket.com/saves' };
+  assert.equal(redirectTarget(site, () => false), 'https://getpocket.com/saves');
+  assert.equal(redirectTarget(site, () => true), null);
+  assert.equal(redirectTarget({ show: 'message' }, () => false), null);
+});
+
+test('sanitizeSite validates numbers and redirect URLs', () => {
+  const limits = { minCooldown: 5, maxCooldown: 300 };
+  const ok = sanitizeSite({ ...newSite('x.com'), domain: 'https://x.com/home', limitMin: '20' }, limits);
+  assert.equal(ok.site.domain, 'x.com');
+  assert.equal(ok.site.limitMin, 20);
+  assert.match(sanitizeSite({ ...newSite('x.com'), limitMin: 0 }, limits).error, /limit/);
+  assert.match(sanitizeSite({ ...newSite('x.com'), cooldownSec: 1 }, limits).error, /Cooldown/);
+  const redirect = sanitizeSite({ ...newSite('x.com'), show: 'redirect', redirectUrl: 'example.org/read' }, limits);
+  assert.equal(redirect.site.redirectUrl, 'https://example.org/read');
+});
+
+test('loosens detects weaker site rules', () => {
+  const limit = newSite('x.com');
+  assert.equal(loosens(limit, { ...limit, mode: 'watch' }), true);
+  assert.equal(loosens(limit, { ...limit, limitMin: 45 }), true);
+  assert.equal(loosens(limit, { ...limit, cooldownSec: 10 }), true);
+  assert.equal(loosens(limit, { ...limit, mode: 'block' }), false);
+  assert.equal(loosens(limit, { ...limit, limitMin: 10, message: 'hi' }), false);
+});
+
+test('auto mode: forced categories, focus windows and loosening', () => {
+  const now = Date.now();
+  const auto = { ...defaultAuto(), categories: { ...defaultAuto().categories, adult: true, social: true } };
+  assert.equal(categoryActive('adult', auto, now), true);
+  assert.equal(categoryActive('social', auto, now), false);
+  const running = { ...auto, window: { start: now - MINUTE, end: now + HOUR } };
+  assert.equal(categoryActive('social', running, now), true);
+  // Turning a category off during a running window loosens; adding one doesn't.
+  assert.equal(autoLoosens(running, { ...running, categories: { ...running.categories, social: false } }, now), true);
+  assert.equal(autoLoosens(running, { ...running, categories: { ...running.categories, news: true } }, now), false);
+  // Leaving "block completely" loosens even with no window.
+  const full = { ...auto, how: 'full' };
+  assert.equal(autoLoosens(full, { ...full, how: 'window' }, now), true);
+  assert.equal(autoLoosens(auto, full, now), false);
+});
+
+test('addTime splits spans across midnight', () => {
+  const days = {};
+  const midnight = new Date(2026, 9, 18).getTime();
+  addTime(days, 'reddit.com', midnight - 10 * MINUTE, midnight + 5 * MINUTE, 30);
+  assert.equal(days['2026-10-17'].sites['reddit.com'].ms, 10 * MINUTE);
+  assert.equal(days['2026-10-18'].sites['reddit.com'].ms, 5 * MINUTE);
+  assert.equal(days['2026-10-18'].sites['reddit.com'].limitMin, 30);
+});
+
+test('underLimitStreak counts back to the first over-limit day', () => {
+  const now = new Date(2026, 9, 18, 15).getTime();
+  const day = (ms) => ({ sites: { 'x.com': { ms, blocks: 0, unlocks: 0, limitMin: 20 } }, categories: {}, forced: {} });
+  const days = { '2026-10-14': day(25 * MINUTE), '2026-10-15': day(5 * MINUTE), '2026-10-17': day(20 * MINUTE), '2026-10-18': day(0) };
+  assert.equal(underLimitStreak(days, new Date(2026, 9, 1).getTime(), now), 4);
+  assert.equal(underLimitStreak(days, new Date(2026, 9, 17).getTime(), now), 2);
+});
+
+test('summarize builds tiles, rows and a 7-day chart', () => {
+  const now = new Date(2026, 9, 18, 15).getTime();
+  const sites = { 'reddit.com': newSite('reddit.com'), 'instagram.com': { ...newSite('instagram.com'), mode: 'block' } };
+  const days = { '2026-10-18': { sites: { 'reddit.com': { ms: 24 * MINUTE, blocks: 1, unlocks: 1 }, 'instagram.com': { ms: 0, blocks: 3, unlocks: 0 } }, categories: {}, forced: {} } };
+  const s = summarize({ range: 'today', days, sites, auto: defaultAuto(), settings: { statsSince: now - 3 * 24 * HOUR }, now });
+  assert.equal(s.ms, 24 * MINUTE);
+  assert.equal(s.allowedMs, 30 * MINUTE);
+  assert.equal(s.blocks, 4);
+  assert.equal(s.unlocks, 1);
+  assert.equal(s.siteRows[0].domain, 'reddit.com');
+  assert.equal(s.chart.length, 7);
+  assert.equal(s.chart.at(-1).today, true);
+});
+
+test('time formatting', () => {
+  assert.equal(formatClock(24 * MINUTE + 10_000), '00:24:10');
+  assert.equal(formatDuration(72 * MINUTE), '1h 12m');
+  assert.equal(formatDuration(45 * MINUTE), '45m');
+  assert.equal(dayKey(new Date(2026, 0, 5).getTime()), '2026-01-05');
+  assert.deepEqual(lastDays(3, new Date(2026, 2, 1).getTime()), ['2026-02-27', '2026-02-28', '2026-03-01']);
+});
+
+test('password hash round-trips and rejects wrong passwords', async () => {
+  const record = await hashPassword('correct horse', 1000);
+  assert.equal(await verifyPassword('correct horse', record), true);
+  assert.equal(await verifyPassword('wrong horse', record), false);
+  assert.equal(await verifyPassword('', null), false);
+});
+
+test('parseList skips comments and www prefixes', () => {
+  assert.deepEqual([...parseList('# header\nwww.Example.com\n\nfoo.org\n')], ['example.com', 'foo.org']);
+});

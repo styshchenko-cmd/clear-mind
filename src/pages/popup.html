@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ClearMind</title>
+<link rel="stylesheet" href="../styles/clearmind.css">
+<link rel="stylesheet" href="popup.css">
+<script src="../shared/adapters.js"></script>
+<script type="module" src="popup.js"></script>
+</head>
+<body>
+<div class="popup">
+
+<div class="popup-head">
+<div class="brand"><span class="brand-mark">&gt;</span><span>clearmind</span><span class="cursor" aria-hidden="true"></span></div>
+<a id="dashboard-icon" class="head-icon" aria-label="Open dashboard" href="#"></a>
+</div>
+
+<div class="stack g6">
+<div class="label">current site</div>
+<div id="site" class="site-name">—</div>
+</div>
+
+<div id="web" class="stack g20" hidden>
+<div class="two-col">
+<div class="card">
+<div class="label">status</div>
+<div id="status" class="strong">—</div>
+</div>
+<div class="card">
+<div class="label">rule</div>
+<div id="rule" class="strong">—</div>
+</div>
+</div>
+
+<div id="usage" class="card usage" hidden>
+<div class="row between g12"><span class="muted">time today</span><span id="used" class="strong num">00:00:00</span></div>
+<div id="usage-bar"></div>
+<div id="left-row" class="row between g12"><span class="muted">left</span><span id="left" class="strong num amber">00:00:00</span></div>
+<div class="row between g12 resets"><span>resets</span><span>00:00 local</span></div>
+</div>
+</div>
+
+<p id="not-web" class="muted" hidden>Nothing to block on this page.</p>
+
+<div class="grow"></div>
+
+<div class="stack g10">
+<p id="error" class="error" role="alert"></p>
+<button id="unblock" type="button" class="btn btn-block btn-strong" hidden>[ unblock for today ]</button>
+<button id="block" type="button" class="btn btn-block btn-danger" hidden>[ block this site ]</button>
+<button id="modify" type="button" class="btn btn-block" hidden>[ modify view ]</button>
+</div>
+
+<div class="popup-foot">
+<span id="foot-note" class="muted">v1.0 · all data stays local</span>
+<a id="dashboard-link" href="#">dashboard →</a>
+</div>
+
+</div>
+</body>
+</html>

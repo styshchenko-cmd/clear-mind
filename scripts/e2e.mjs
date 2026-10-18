@@ -1,0 +1,274 @@
+// End-to-end smoke test in a real Chromium browser (Brave by default).
+// Every hostname resolves to a local test server, so nothing leaves the machine.
+//
+//   npm run build && node scripts/e2e.mjs [screenshot-dir]
+//   BROWSER=google-chrome node scripts/e2e.mjs
+//
+// Note: branded Google Chrome 137+ ignores --load-extension; use Brave or Chromium.
+
+import { execFileSync, spawn } from 'node:child_process';
+import { createServer } from 'node:http';
+import { createServer as createTlsServer } from 'node:https';
+import { connect, createServer as createNetServer } from 'node:net';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = fileURLToPath(new URL('..', import.meta.url));
+const extension = join(root, 'dist/chrome');
+const shots = process.argv[2] ?? join(root, 'dist/e2e');
+const browser = process.env.BROWSER ?? 'brave-browser';
+const PORT = 8765;
+const DEBUG_PORT = 9333;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---------------------------------------------------------------- local "internet"
+
+const profile = await mkdtemp(join(tmpdir(), 'clearmind-e2e-'));
+
+// Brave upgrades http:// to https://, so serve both on one port with a
+// throwaway self-signed certificate (the browser runs with cert errors ignored).
+execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=clearmind-test',
+  '-keyout', join(profile, 'key.pem'), '-out', join(profile, 'cert.pem')], { stdio: 'ignore' });
+const respond = (req, res) => {
+  res.writeHead(200, { 'content-type': 'text/html' });
+  res.end(`<!doctype html><title>${req.headers.host}</title><body style="background:#fff"><h1>test page: ${req.headers.host}${req.url}</h1></body>`);
+};
+const plain = createServer(respond);
+const tls = createTlsServer({ key: await readFile(join(profile, 'key.pem')), cert: await readFile(join(profile, 'cert.pem')) }, respond);
+await new Promise((r) => plain.listen(PORT + 1, '127.0.0.1', r));
+await new Promise((r) => tls.listen(PORT + 2, '127.0.0.1', r));
+// The public port sniffs the first byte (0x16 = TLS handshake) and proxies.
+const server = createNetServer((socket) => {
+  socket.once('data', (first) => {
+    const upstream = connect(first[0] === 0x16 ? PORT + 2 : PORT + 1, '127.0.0.1');
+    upstream.write(first);
+    socket.pipe(upstream).pipe(socket);
+    socket.on('error', () => upstream.destroy());
+    upstream.on('error', () => socket.destroy());
+  });
+});
+await new Promise((r) => server.listen(PORT, '127.0.0.1', r));
+
+const proc = spawn(browser, [
+  '--headless=new',
+  `--user-data-dir=${profile}`,
+  `--remote-debugging-port=${DEBUG_PORT}`,
+  `--load-extension=${extension}`,
+  `--disable-extensions-except=${extension}`,
+  `--host-resolver-rules=MAP * 127.0.0.1:${PORT}, EXCLUDE 127.0.0.1`,
+  '--ignore-certificate-errors',
+  '--no-first-run', '--no-default-browser-check', '--disable-component-update', '--window-size=1280,860',
+], { stdio: 'ignore', detached: true });
+
+// ---------------------------------------------------------------- tiny CDP client
+
+let ws;
+for (let i = 0; i < 50 && !ws; i++) {
+  try {
+    const { webSocketDebuggerUrl } = await (await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/version`)).json();
+    ws = new WebSocket(webSocketDebuggerUrl);
+    await new Promise((resolve, reject) => ((ws.onopen = resolve), (ws.onerror = reject)));
+  } catch {
+    ws = null;
+    await sleep(200);
+  }
+}
+if (!ws) throw new Error(`could not start ${browser}`);
+
+let nextId = 0;
+const waiting = new Map();
+const errors = [];
+ws.onmessage = ({ data }) => {
+  const msg = JSON.parse(data);
+  if (msg.id && waiting.has(msg.id)) {
+    const { resolve, reject } = waiting.get(msg.id);
+    waiting.delete(msg.id);
+    msg.error ? reject(new Error(`${msg.error.message}`)) : resolve(msg.result);
+  } else if (msg.method === 'Runtime.exceptionThrown') {
+    errors.push(msg.params.exceptionDetails.exception?.description ?? msg.params.exceptionDetails.text);
+  }
+};
+const cdp = (method, params = {}, sessionId) =>
+  new Promise((resolve, reject) => {
+    const id = ++nextId;
+    waiting.set(id, { resolve, reject });
+    ws.send(JSON.stringify({ id, method, params, sessionId }));
+  });
+
+async function attach(targetId) {
+  const { sessionId } = await cdp('Target.attachToTarget', { targetId, flatten: true });
+  await cdp('Runtime.enable', {}, sessionId);
+  await cdp('Page.enable', {}, sessionId).catch(() => {});
+  return sessionId;
+}
+
+async function evaluate(sessionId, expression) {
+  const { result, exceptionDetails } = await cdp('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, sessionId);
+  if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text);
+  return result.value;
+}
+
+async function open(url) {
+  const { targetId } = await cdp('Target.createTarget', { url });
+  const sessionId = await attach(targetId);
+  await sleep(800);
+  return { targetId, sessionId };
+}
+
+async function urlOf(targetId) {
+  const { targetInfo } = await cdp('Target.getTargetInfo', { targetId });
+  return targetInfo.url;
+}
+
+async function shot(sessionId, name, width = 1280, height = 860) {
+  await cdp('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, sessionId);
+  await sleep(300);
+  const { data } = await cdp('Page.captureScreenshot', { format: 'png' }, sessionId);
+  await writeFile(join(shots, `${name}.png`), Buffer.from(data, 'base64'));
+}
+
+let failures = 0;
+function check(name, ok, detail = '') {
+  console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${ok ? '' : `  ${detail}`}`);
+  if (!ok) failures += 1;
+}
+
+// ---------------------------------------------------------------- the run
+
+try {
+  await mkdir(shots, { recursive: true });
+  let extId;
+  for (let i = 0; i < 50 && !extId; i++) {
+    const { targetInfos } = await cdp('Target.getTargets');
+    const sw = targetInfos.find((t) => t.type === 'service_worker' && t.url.endsWith('/background/service-worker.js'));
+    if (sw) {
+      extId = new URL(sw.url).host;
+      await attach(sw.targetId);
+    } else await sleep(200);
+  }
+  check('extension loaded', Boolean(extId));
+  const page = (path) => `chrome-extension://${extId}/pages/${path}`;
+
+  const { targetInfos } = await cdp('Target.getTargets');
+  check('settings opened on install', targetInfos.some((t) => t.url.includes('options.html#settings')));
+
+  const options = await open(page('options.html#settings'));
+  await shot(options.sessionId, 'options-settings-first-run');
+  const send = (msg) => evaluate(options.sessionId, `chrome.runtime.sendMessage(${JSON.stringify(msg)})`);
+
+  const pw = await send({ type: 'setPassword', next: 'clearmind123' });
+  check('set password', pw?.ok, JSON.stringify(pw));
+  const site = (domain, extra) => ({
+    domain, mode: 'limit', limitMin: 30, cooldownSec: 5, show: 'message', redirectUrl: '', modify: {},
+    message: 'Go write the thing. Reddit will still be here at 18:00.',
+    cooldownMessage: 'Thirty seconds. What were you about to do before this?', ...extra,
+  });
+  for (const s of [
+    site('reddit.com'),
+    site('x.com', { limitMin: 20, show: 'redirect', redirectUrl: 'https://getpocket.com/saves' }),
+    site('youtube.com', { limitMin: 60 }),
+    site('instagram.com', { mode: 'block' }),
+  ]) check(`save ${s.domain}`, (await send({ type: 'saveSite', site: s })).ok);
+
+  // Seed usage: reddit is over its limit today; a week of history for the chart.
+  await evaluate(options.sessionId, `(async () => {
+    const key = (offset) => { const d = new Date(); d.setDate(d.getDate() - offset); return d.toLocaleDateString('sv-SE'); };
+    const min = 60000, days = {};
+    [62, 48, 140, 70, 55, 80].forEach((m, i) => days[key(6 - i)] = { sites: { 'reddit.com': { ms: m * min * 0.4, blocks: 1, unlocks: 0, limitMin: 30 }, 'youtube.com': { ms: m * min * 0.6, blocks: 0, unlocks: i === 2 ? 1 : 0, limitMin: 60 } }, categories: {}, forced: {} });
+    days[key(4)].sites['reddit.com'].ms = 45 * min;
+    days[key(0)] = { sites: { 'reddit.com': { ms: 31 * min, blocks: 2, unlocks: 0, limitMin: 30 }, 'x.com': { ms: 12 * min, blocks: 0, unlocks: 0, limitMin: 20 }, 'youtube.com': { ms: 30 * min, blocks: 0, unlocks: 0, limitMin: 60 }, 'instagram.com': { ms: 0, blocks: 3, unlocks: 0 } }, categories: { social: { blocks: 4, unlocks: 0 } }, forced: {} };
+    const { settings } = await chrome.storage.local.get('settings');
+    await chrome.storage.local.set({ days, settings: { ...settings, statsSince: Date.now() - 15 * 86400000 } });
+  })()`);
+  check('start focus window', (await send({ type: 'saveAuto', categories: { adult: true, social: true, gambling: true }, how: 'window', windowLength: '2h', startWindow: true })).ok);
+
+  // Password-guarded changes.
+  check('loosening a rule needs the password', (await send({ type: 'saveSite', site: site('reddit.com', { mode: 'watch' }) })).needPassword === true);
+  check('removing a site needs the password', (await send({ type: 'removeSite', domain: 'youtube.com' })).needPassword === true);
+  check('wrong password is rejected', (await send({ type: 'removeSite', domain: 'youtube.com', password: 'nope' })).error === 'wrong password');
+  check('turning off a running category needs the password', (await send({ type: 'saveAuto', categories: { adult: true }, how: 'window', windowLength: '2h' })).needPassword === true);
+
+  for (const view of ['stats', 'sites', 'site/reddit.com', 'auto', 'settings']) {
+    await evaluate(options.sessionId, `location.hash = '${view}'`);
+    await sleep(500);
+    await shot(options.sessionId, `options-${view.replace('/', '-')}`, 1280, view === 'stats' ? 1120 : view.startsWith('site/') ? 1000 : 860);
+  }
+
+  // Browsing: reddit is over its limit.
+  const tab = await open('http://reddit.com/');
+  await sleep(700);
+  let url = await urlOf(tab.targetId);
+  check('over-limit site shows the block page', url.startsWith(page('blocked.html')) && url.includes('r=limit'), url);
+  await shot(tab.sessionId, 'blocked');
+
+  const tabs = await evaluate(options.sessionId, `chrome.tabs.query({}).then(ts => ts.map(t => ({ id: t.id, url: t.url })))`);
+  const tabId = tabs.find((t) => t.url.includes('blocked.html')).id;
+  const popup = await open(page(`popup.html?tab=${tabId}`));
+  await shot(popup.sessionId, 'popup-blocked', 360, 600);
+
+  await evaluate(tab.sessionId, `document.getElementById('pw').value = 'wrong'; document.getElementById('unlock').click()`);
+  await sleep(600);
+  check('wrong password shows an error', (await evaluate(tab.sessionId, `document.getElementById('error').textContent`)) === 'wrong password');
+  await evaluate(tab.sessionId, `document.getElementById('pw').value = 'clearmind123'; document.getElementById('unlock').click()`);
+  await sleep(1500);
+  url = await urlOf(tab.targetId);
+  check('right password starts the cooldown', url.startsWith(page('unlocking.html')), url);
+  await shot(tab.sessionId, 'unlocking');
+  await sleep(5000);
+  check('cooldown finishes', await evaluate(tab.sessionId, `!document.getElementById('done').hidden`));
+  await shot(tab.sessionId, 'unlocking-done');
+  await evaluate(tab.sessionId, `document.getElementById('continue').click()`);
+  await sleep(1200);
+  url = await urlOf(tab.targetId);
+  check('unlocked tab opens the site', /^https?:\/\/reddit\.com\/$/.test(url), url);
+  check('modify view CSS injected on reddit', await evaluate(tab.sessionId, `!!document.getElementById('clearmind-modify') && document.documentElement.dataset.cmRoute === 'home'`));
+
+  await cdp('Target.closeTarget', { targetId: popup.targetId });
+  const popup2 = await open(page(`popup.html?tab=${tabId}`));
+  await sleep(500);
+  check('popup shows the unlock', (await evaluate(popup2.sessionId, `document.getElementById('status').textContent`)) === 'UNLOCKED');
+  await shot(popup2.sessionId, 'popup-unlocked', 360, 600);
+
+  const other = await open('http://reddit.com/r/popular');
+  await sleep(600);
+  url = await urlOf(other.targetId);
+  check('unlock is per tab', url.includes('blocked.html'), url);
+
+  for (const [target, expect] of [
+    ['http://instagram.com/', 'r=block'],
+    ['http://www.pornhub.com/', 'c=adult'],
+    ['http://bet365.com/', 'c=gambling'],
+    ['http://tiktok.com/', 'c=social'],
+  ]) {
+    await cdp('Page.navigate', { url: target }, other.sessionId);
+    await sleep(900);
+    url = await urlOf(other.targetId);
+    check(`${target} blocked (${expect})`, url.includes('blocked.html') && url.includes(expect), url);
+  }
+  await shot(other.sessionId, 'blocked-category');
+
+  await cdp('Page.navigate', { url: 'http://x.com/home' }, other.sessionId);
+  await sleep(900);
+  check('redirect rule is not applied while under the limit', /^https?:\/\/x\.com\/home$/.test(await urlOf(other.targetId)));
+  await cdp('Page.navigate', { url: 'http://news.ycombinator.com/' }, other.sessionId);
+  await sleep(900);
+  check('unlisted site loads', /^https?:\/\/news\.ycombinator\.com\/$/.test(await urlOf(other.targetId)));
+
+  check('no uncaught errors', errors.length === 0, errors.join('\n'));
+} catch (error) {
+  check('run completed', false, error.stack);
+} finally {
+  ws.close();
+  // The launcher is often a wrapper script: end the whole process group.
+  try { process.kill(-proc.pid); } catch {}
+  server.close();
+  plain.close();
+  tls.close();
+  await sleep(300);
+  await rm(profile, { recursive: true, force: true });
+}
+
+console.log(`\nscreenshots: ${shots}`);
+process.exit(failures ? 1 : 0);
