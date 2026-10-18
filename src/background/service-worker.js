@@ -350,7 +350,7 @@ const handlers = {
       tabId: sender.tab.id,
       domain,
       category: category || null,
-      url,
+      url: hostOf(url) ? url : null,
       startedAt: Date.now(),
       cooldownSec: local.sites[domain]?.cooldownSec ?? model.DEFAULT_COOLDOWN_SEC,
     };
@@ -411,7 +411,12 @@ const handlers = {
     if (error) return { ok: false, error };
     const existing = local.sites[site.domain];
     const overrides = (await categoryOverlaps(site.domain)).some((o) => model.overrideLoosens(site, local.auto.categories[o.category]));
-    const looser = (existing && model.loosens(existing, site)) || overrides;
+    // A new rule for a subdomain (old.reddit.com) takes over from its parent's
+    // (reddit.com): anything short of a block with the same cooldown loosens it.
+    const parentDomain = existing ? null : findSiteDomain(site.domain.split('.').slice(1).join('.'), local.sites);
+    const parent = parentDomain ? local.sites[parentDomain] : null;
+    const escapesParent = Boolean(parent && parent.mode !== 'watch' && (site.mode !== 'block' || site.cooldownSec < parent.cooldownSec));
+    const looser = (existing && model.loosens(existing, site)) || overrides || escapesParent;
     if (looser && !(await passwordOk(password))) return needPassword(password);
     if (existing) site.addedAt = existing.addedAt;
     local.sites[site.domain] = site;
@@ -514,7 +519,7 @@ const handlers = {
 };
 
 api.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  const handler = handlers[message?.type];
+  const handler = Object.hasOwn(handlers, message?.type) ? handlers[message.type] : null;
   // Only our own extension pages may change rules.
   if (!handler || sender.id !== api.runtime.id || !sender.url?.startsWith(api.runtime.getURL(''))) return false;
   serial(() => handler(message, sender)).then(sendResponse, (error) =>

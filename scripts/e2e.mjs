@@ -261,6 +261,11 @@ try {
   await sleep(1500);
   url = await urlOf(tab.targetId);
   check('right password starts the cooldown', url.startsWith(page('unlocking.html')), url);
+  // A javascript: original URL never becomes the "continue" target.
+  const evil = await evaluate(tab.sessionId, `chrome.runtime.sendMessage({ type: 'startUnlock', domain: 'reddit.com', url: 'javascript:alert(1)', password: 'clearmind123' })`);
+  const evilTarget = await evaluate(tab.sessionId, `chrome.runtime.sendMessage({ type: 'getUnlock', token: ${JSON.stringify(evil.token)} }).then((u) => u.url)`);
+  check('unlock ignores a javascript: target', evil.ok && evilTarget === null, JSON.stringify(evilTarget));
+  await evaluate(tab.sessionId, `chrome.runtime.sendMessage({ type: 'cancelUnlock', token: ${JSON.stringify(evil.token)} })`);
   await shot(tab.sessionId, 'unlocking');
   await sleep(5000);
   check('cooldown finishes', await evaluate(tab.sessionId, `!document.getElementById('done').hidden`));
@@ -306,7 +311,10 @@ try {
   await cdp('Page.navigate', { url: 'http://tiktok.com/' }, other.sessionId);
   await sleep(900);
   check('watch rule overrides the social category', /^https?:\/\/tiktok\.com\/$/.test(await urlOf(other.targetId)));
-  check('stricter override needs no password', (await send({ type: 'saveSite', site: site('pornhub.com', { mode: 'block' }) })).ok === true);
+  check('a limit override of a running window needs the password', (await send({ type: 'saveSite', site: site('9gag.com', { limitMin: 1440 }) })).needPassword === true);
+  check('stricter override needs no password', (await send({ type: 'saveSite', site: site('pornhub.com', { mode: 'block', cooldownSec: 30 }) })).ok === true);
+  check('a subdomain rule cannot escape its parent without the password',
+    (await send({ type: 'saveSite', site: site('old.reddit.com', { mode: 'watch' }) })).needPassword === true);
   await cdp('Page.navigate', { url: 'http://pornhub.com/' }, other.sessionId);
   await sleep(900);
   url = await urlOf(other.targetId);

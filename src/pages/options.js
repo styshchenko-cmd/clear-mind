@@ -358,7 +358,7 @@ function viewSite(domain) {
     form.append(h('section', { class: 'stack g16' },
       sectionHead('modify view', `${adapter.label} is supported`, 'green'),
       h('p', { class: 'caption', style: { margin: 0 } }, 'Applies while the site is allowed. Keeps the parts you came for, hides the parts that keep you there.'),
-      h('div', { class: 'grid-auto', style: { '--min': '240px' } }, options.map((o) =>
+      h('div', { class: 'grid-auto', style: { '--min': '200px' } }, options.map((o) =>
         h('label', { class: 'option center' },
           h('input', { type: 'checkbox', name: 'modify', value: o.key, checked: site.modify[o.key] ?? o.default }),
           h('span', {}, o.label))))));
@@ -485,7 +485,7 @@ function viewAuto(selected) {
       sectionHead(`how hard · "${category.label}"`,
         running ? `focus window running · until ${formatTimeOfDay(running.end)}` : `now: ${model.categoryRuleLabel(saved)}`,
         running ? 'amber' : ''),
-      h('fieldset', { class: 'grid-auto', style: { '--min': '260px' } },
+      h('fieldset', { class: 'grid-auto', style: { '--min': '200px' } },
         h('legend', { class: 'sr-only' }, `Block strength for ${category.label}`),
         card('off', 'Off', 'not blocked'),
         card('window', 'Block for some time', 'a focus window · unblocks itself after',

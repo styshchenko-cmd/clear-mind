@@ -58,12 +58,14 @@ test('listOverlap finds covering entries and entries inside a site', () => {
   assert.equal(listOverlap('example.org', list), null);
 });
 
-test('overrideLoosens: a site rule weaker than its category', () => {
-  const site = (mode) => ({ ...newSite('x.com'), mode });
+test('overrideLoosens: anything short of a full-cooldown block escapes a category', () => {
+  const site = (mode, cooldownSec = 30) => ({ ...newSite('x.com'), mode, cooldownSec });
   assert.equal(overrideLoosens(site('block'), { mode: 'full' }), false);
+  assert.equal(overrideLoosens(site('block', 5), { mode: 'full' }), true, 'shorter cooldown');
   assert.equal(overrideLoosens(site('limit'), { mode: 'full' }), true);
+  assert.equal(overrideLoosens(site('limit'), { mode: 'window' }), true, 'a site limit escapes a running window');
+  assert.equal(overrideLoosens(site('limit'), { mode: 'limit' }), true, 'its own budget escapes the shared one');
   assert.equal(overrideLoosens(site('watch'), { mode: 'window' }), true);
-  assert.equal(overrideLoosens(site('limit'), { mode: 'window' }), false);
   assert.equal(overrideLoosens(site('watch'), { mode: 'off' }), false);
 });
 

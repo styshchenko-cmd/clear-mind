@@ -3,7 +3,9 @@ import { send } from '../lib/ui.js';
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const token = params.get('t');
-const blockPage = params.get('back') ?? 'blocked.html';
+// Only ever go back to our own block page.
+const back = params.get('back') ?? '';
+const blockPage = back.startsWith(new URL('blocked.html', location.href).href) ? back : 'blocked.html';
 
 const unlock = await send('getUnlock', { token });
 
@@ -34,7 +36,8 @@ if (!unlock.ok) {
     clearInterval(timer);
     const result = await send('finishUnlock', { token });
     if (!result.ok) return show('expired');
-    $('continue').href = result.url;
+    // Continue only to a web page (the stored URL of the blocked site).
+    $('continue').href = /^https?:/i.test(result.url ?? '') ? result.url : 'about:blank';
     show('done');
     $('continue').focus();
   };

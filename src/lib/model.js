@@ -140,11 +140,11 @@ export function loosens(before, after) {
 }
 
 // Whether a site rule that takes over a category's domains is weaker than the
-// category: "watch" under any blocking category, or anything short of "block"
-// under a category that is blocked completely.
+// category: anything short of a block with at least the default cooldown
+// (time limits and focus windows included, which a site limit would escape).
 export function overrideLoosens(site, config) {
-  if (!config || config.mode === 'off' || site.mode === 'block') return false;
-  return config.mode === 'full' || site.mode === 'watch';
+  if (!config || config.mode === 'off') return false;
+  return site.mode !== 'block' || site.cooldownSec < DEFAULT_COOLDOWN_SEC;
 }
 
 // Whether changing one category from `before` to `after` weakens it: leaving

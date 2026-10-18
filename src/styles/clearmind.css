@@ -192,6 +192,16 @@ legend { padding: 0; margin-bottom: 10px; }
 .confirm { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 12px; border: 1px solid var(--amber); border-radius: 4px; }
 .confirm .input { flex: 1 1 220px; width: auto; min-width: 0; }
 
+/* Small utilities used by the static pages (no inline styles: see the CSP). */
+.flush { margin: 0; }
+.small { font-size: 13px; line-height: 20px; }
+.f15 { font-size: 15px; }
+.fill { flex: 1 1 220px; width: auto; min-width: 0; }
+.fixed { flex: 0 0 auto; }
+.stat-tiles { --min: 180px; gap: 12px; }
+.stat-box { padding: 12px 16px; }
+#progress { width: 0; }
+
 /* Block page: the unlock form stays folded away behind one more click. */
 .unlock { padding-top: 20px; border-top: 1px dashed var(--border); }
 .unlock > summary { list-style: none; color: var(--muted); font-size: 13px; }

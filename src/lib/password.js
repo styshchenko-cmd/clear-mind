@@ -1,7 +1,7 @@
 // Password hashing with PBKDF2-SHA256 (WebCrypto). Only the salted hash is
 // stored; there is no way to recover the password.
 
-const ITERATIONS = 310_000;
+const ITERATIONS = 600_000;
 export const MIN_PASSWORD_LENGTH = 8;
 
 const toHex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
