@@ -20,15 +20,18 @@ Upload `dist/clearmind-chrome-1.1.0.zip` (`npm run build`).
 
 **Description:**
 
+Avoid naming other companies' sites or products here: the Chrome Web Store
+treats a list of brand names as keyword spam (rejected once for exactly that).
+
 ```
 ClearMind gives you back your attention. You set the rules for yourself: block a site, give it a daily time limit, or keep it but hide the parts that keep you scrolling. When you really need a blocked site, a password and a short cooldown stand between you and it. Just enough friction to ask: do I actually need this?
 
 BLOCK OR LIMIT ANY SITE
 • Block: the block page shows every time, with a message you wrote to yourself.
-• Time limit: e.g. 30 minutes a day on reddit.com. Resets at midnight.
+• Time limit: for example, 30 minutes a day. Resets at midnight.
 • Watch: just track the time, never block.
 • Or redirect to somewhere better, like your reading list.
-• Type the site any way you like (reddit.com, www.reddit.com, https://…): one rule covers it.
+• Type a site's address however you like, with or without "www" or "https": one rule covers the whole site.
 
 UNLOCK WITH INTENT
 • "Still need it?" → your password → a 30-second cooldown (you choose the length).
@@ -36,13 +39,13 @@ UNLOCK WITH INTENT
 • Loosening any rule later also asks for the password.
 
 AUTO MODE: WHOLE CATEGORIES
-• Social feeds, news, video & streaming, shopping, adult content, gambling.
-• For each category: off, a focus window (25 min, 2 h, until 18:00, rest of the day), a shared daily limit, or always blocked.
+• Social feeds, news, video and streaming, shopping, adult content, gambling.
+• For each category: off, a focus window (25 minutes, 2 hours, until 18:00, or the rest of the day), a shared daily limit, or always blocked.
 • Built-in lists, stored on your device. Sites you configure yourself override the category.
 
 MODIFY VIEW: KEEP THE SITE, LOSE THE FEED
-• reddit, YouTube, X, Instagram, Facebook and LinkedIn.
-• Hide the home feed, Shorts and Reels, recommendations, trends, notification badges or comments, or show images in grayscale.
+• On popular social and video sites, hide the home feed, short-video sections, recommendations, trending lists, notification badges or comments.
+• Optionally show images and video in grayscale.
 
 SEE WHERE THE TIME GOES
 • Time on your listed sites, blocks shown, unlocks, and your streak of days under the limit.
@@ -51,7 +54,7 @@ SEE WHERE THE TIME GOES
 PRIVATE BY DESIGN
 • No account, no servers, no analytics, no ads.
 • ClearMind makes no network requests. Everything stays in your browser's storage on this device.
-• Free and open source (GPL-3.0): https://github.com/styshchenko-cmd/clear-mind
+• Free and open source (GPL-3.0).
 ```
 
 **Graphic assets** (all in `store/`):
