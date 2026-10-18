@@ -37,7 +37,7 @@ servers and no analytics, and stores all data in the browser.
 2. Turn on *Developer mode*.
 3. Click *Load unpacked* and pick the `src/` folder (or `dist/chrome/` after a build).
 
-On first install the settings page opens: set a password there first.
+On first install a setup page opens: set your unblock password there, then read the short guide to the pages. The same guide is under *help* in the left menu.
 
 **Firefox / Zen** (build is produced, not yet tested by hand)
 

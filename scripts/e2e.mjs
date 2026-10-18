@@ -152,14 +152,34 @@ try {
   const page = (path) => `chrome-extension://${extId}/pages/${path}`;
 
   const { targetInfos } = await cdp('Target.getTargets');
-  check('settings opened on install', targetInfos.some((t) => t.url.includes('options.html#settings')));
+  check('setup page opened on install', targetInfos.some((t) => t.url.endsWith('options.html#setup')));
 
-  const options = await open(page('options.html#settings'));
-  await shot(options.sessionId, 'options-settings-first-run');
+  const options = await open(page('options.html#setup'));
+  await shot(options.sessionId, 'options-setup', 1280, 900);
   const send = (msg) => evaluate(options.sessionId, `chrome.runtime.sendMessage(${JSON.stringify(msg)})`);
 
-  const pw = await send({ type: 'setPassword', next: 'clearmind123' });
-  check('set password', pw?.ok, JSON.stringify(pw));
+  // Set the password through the setup form, as a new user would.
+  await evaluate(options.sessionId, `(() => {
+    document.getElementById('setup-pw').value = 'short';
+    document.getElementById('setup-pw-repeat').value = 'short';
+    document.querySelector('#setup-pw').form.requestSubmit();
+  })()`);
+  await sleep(300);
+  check('setup rejects a short password', (await evaluate(options.sessionId, `document.querySelector('.error').textContent`)).includes('at least'));
+  await evaluate(options.sessionId, `(() => {
+    document.getElementById('setup-pw').value = 'clearmind123';
+    document.getElementById('setup-pw-repeat').value = 'clearmind123';
+    document.querySelector('#setup-pw').form.requestSubmit();
+  })()`);
+  await sleep(1500);
+  const stored = await evaluate(options.sessionId, `chrome.storage.local.get('settings').then((s) => Boolean(s.settings.password))`);
+  check('set password from the setup page', stored && (await evaluate(options.sessionId, `document.body.textContent.includes('add your first site')`)));
+  await shot(options.sessionId, 'options-setup-done', 1280, 900);
+  await evaluate(options.sessionId, `location.hash = 'help'`);
+  await sleep(400);
+  check('help shows the guide with a settings link instead of the form', await evaluate(options.sessionId,
+    `!document.getElementById('setup-pw') && !!document.querySelector('a[href="#settings"]') && document.body.textContent.includes('blocked sites')`));
+  await shot(options.sessionId, 'options-help', 1280, 900);
   const site = (domain, extra) => ({
     domain, mode: 'limit', limitMin: 30, cooldownSec: 5, show: 'message', redirectUrl: '', modify: {},
     message: 'Go write the thing. Reddit will still be here at 18:00.',

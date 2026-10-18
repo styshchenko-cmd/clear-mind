@@ -543,7 +543,7 @@ api.runtime.onInstalled.addListener(({ reason }) =>
     await saveLocal('auto'); // also migrates the 1.0 auto-mode shape
     if (!stored.sites) await saveLocal('sites');
     if (!stored.days) await saveLocal('days');
-    if (reason === 'install') await api.tabs.create({ url: api.runtime.getURL('pages/options.html#settings') });
+    if (reason === 'install') await api.tabs.create({ url: api.runtime.getURL('pages/options.html#setup') });
   }),
 );
 

@@ -81,9 +81,9 @@ function renderSidebar(route) {
         h('div', { class: 'nav' }, Object.keys(data.sites).sort().map((d) =>
           h('a', { href: `#site/${encodeURIComponent(d)}`, 'aria-current': d === route.domain ? 'page' : null, class: 'wrap' }, d))))));
   } else {
-    const items = [['stats', 'stats'], ['sites', 'blocked sites'], ['auto', 'auto mode'], ['settings', 'settings']];
+    const items = [['stats', 'stats'], ['sites', 'blocked sites'], ['auto', 'auto mode'], ['settings', 'settings'], ['help', 'help']];
     nav.append(h('div', { class: 'nav' }, items.map(([id, text]) =>
-      h('a', { href: `#${id}`, 'aria-current': route.view === id ? 'page' : null }, text))));
+      h('a', { href: `#${id}`, 'aria-current': route.view === id || (id === 'help' && route.view === 'setup') ? 'page' : null }, text))));
   }
   sidebarFoot.replaceChildren(`v${model.VERSION} · data stored locally`, h('br'),
     data.settings.password ? 'password set ✓' : h('a', { href: '#settings', class: 'amber' }, 'no password set'));
@@ -528,6 +528,81 @@ function viewAuto(selected) {
   ];
 }
 
+// ---------------------------------------------------------------- setup & help
+
+const GUIDE = [
+  ['stats', 'stats', 'Time on your listed sites, blocks shown, unlocks and your streak of days under the limit.'],
+  ['sites', 'blocked sites', 'Lets you block or time-limit certain sites, write the message the block page shows, and hide feeds with modify view.'],
+  ['auto', 'auto mode', 'Blocks whole categories (adult, social feeds, news, video, shopping, gambling): off, for a focus window, with a daily limit, or always.'],
+  ['settings', 'settings', 'Change your password or reset the statistics.'],
+  ['help', 'help', 'This page.'],
+];
+
+const EVERYDAY = [
+  ['toolbar icon', 'Shows the current site, its rule and time left today. Block the site you are on with one click.'],
+  ['block page', 'Appears instead of a blocked site, with your message. "[ still need it? ]" → password → a short cooldown → the site opens in that tab until you close it or midnight.'],
+];
+
+// First-run setup (`setup`) and the help page share this view; setup asks for
+// the password right here, help points to settings instead.
+function viewGuide(setup) {
+  const hasPassword = Boolean(data.settings.password);
+  let top;
+  if (setup && !hasPassword) {
+    const error = h('p', { class: 'error', role: 'alert', style: { margin: 0 } });
+    const field = (id, text) => h('div', { class: 'field' }, h('label', { for: id }, text),
+      h('input', { id, type: 'password', class: 'input', autocomplete: 'new-password' }));
+    const setPassword = async (e) => {
+      e.preventDefault();
+      error.textContent = '';
+      const next = document.getElementById('setup-pw').value;
+      if (next.length < MIN_PASSWORD_LENGTH) return (error.textContent = `Use at least ${MIN_PASSWORD_LENGTH} characters.`);
+      if (next !== document.getElementById('setup-pw-repeat').value) return (error.textContent = "The passwords don't match.");
+      const result = await send('setPassword', { next });
+      if (!result.ok) return (error.textContent = result.error);
+      data = await load();
+      render();
+    };
+    top = h('section', { class: 'stack g16', style: { maxWidth: '640px' } },
+      sectionHead('unblock password', 'step 1', 'amber'),
+      h('p', { style: { margin: 0 } }, 'Your key for unblocking sites. It cannot be recovered.'),
+      h('form', { class: 'stack g12', onsubmit: setPassword },
+        h('div', { class: 'grid-auto', style: { '--min': '240px', gap: '12px' } },
+          field('setup-pw', 'Password'), field('setup-pw-repeat', 'Repeat password')),
+        error,
+        h('div', { class: 'row wrap-row between g12' },
+          h('span', { class: 'caption' }, `at least ${MIN_PASSWORD_LENGTH} characters · stored as a hash on this device`),
+          h('button', { type: 'submit', class: 'btn btn-primary' }, '[ set password ]'))));
+  } else if (setup) {
+    top = h('section', { class: 'stack g16', style: { maxWidth: '640px' } },
+      sectionHead('unblock password', 'set ✓', 'green'),
+      h('p', { style: { margin: 0 } }, 'Done. Next, add the first site you want to keep away from.'),
+      h('div', {}, h('a', { href: '#sites', class: 'btn btn-primary' }, '[ add your first site → ]')));
+  } else {
+    top = h('section', { class: 'stack g16', style: { maxWidth: '640px' } },
+      sectionHead('unblock password', hasPassword ? 'set ✓' : 'not set', hasPassword ? 'green' : 'amber'),
+      h('p', { style: { margin: 0 } }, 'Your key for unblocking sites. It cannot be recovered. ',
+        h('a', { href: '#settings', style: { whiteSpace: 'nowrap' } }, hasPassword ? 'change it in settings →' : 'set it up in settings →')));
+  }
+
+  const rows = (items, link) => h('div', { class: 'table' }, items.map(([id, name, text]) =>
+    h('div', { class: 'tr', style: { gridTemplateColumns: 'minmax(130px, 180px) 1fr', alignItems: 'start' } },
+      link ? h('a', { href: `#${id}`, class: 'medium' }, name) : h('span', { class: 'medium' }, id),
+      h('span', { class: 'muted' }, link ? text : name))));
+
+  return [
+    pageHeader(setup ? 'setup' : 'help', setup ? 'Welcome to ClearMind' : 'How ClearMind works'),
+    top,
+    h('section', { class: 'stack g16', style: { maxWidth: '860px' } },
+      sectionHead('the pages on the left'),
+      rows(GUIDE, true)),
+    h('section', { class: 'stack g16', style: { maxWidth: '860px' } },
+      sectionHead('while you browse'),
+      rows(EVERYDAY, false)),
+    h('p', { class: 'caption', style: { margin: 0 } }, 'Everything stays on this device. ClearMind makes no network requests.'),
+  ];
+}
+
 // ---------------------------------------------------------------- settings
 
 function viewSettings() {
@@ -595,14 +670,14 @@ function route() {
   const hash = decodeURIComponent(location.hash.slice(1));
   if (hash.startsWith('site/')) return { view: 'site', domain: normalizeDomain(hash.slice(5)) };
   if (hash.startsWith('auto/')) return { view: 'auto', category: hash.slice(5) };
-  return { view: ['stats', 'sites', 'auto', 'settings'].includes(hash) ? hash : 'stats' };
+  return { view: ['stats', 'sites', 'auto', 'settings', 'setup', 'help'].includes(hash) ? hash : 'stats' };
 }
 
 function render() {
   const r = route();
   if (r.view === 'site' && !r.domain) return void (location.hash = 'sites');
   renderSidebar(r);
-  const views = { stats: viewStats, sites: viewSites, auto: () => viewAuto(r.category), settings: viewSettings, site: () => viewSite(r.domain) };
+  const views = { stats: viewStats, sites: viewSites, auto: () => viewAuto(r.category), settings: viewSettings, setup: () => viewGuide(true), help: () => viewGuide(false), site: () => viewSite(r.domain) };
   main.replaceChildren(...views[r.view]().filter(Boolean));
   document.title = `ClearMind · ${r.view === 'site' ? r.domain : r.view}`;
 }
