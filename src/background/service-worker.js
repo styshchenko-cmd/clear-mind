@@ -118,10 +118,9 @@ async function evaluate(tabId, url, now = Date.now()) {
   });
 }
 
-function blockPageUrl(decision, originalUrl, expand = false) {
+function blockPageUrl(decision, originalUrl) {
   const params = new URLSearchParams({ d: decision.domain, r: decision.reason, u: originalUrl });
   if (decision.category) params.set('c', decision.category);
-  if (expand) params.set('unlock', '1');
   return `${PAGES}blocked.html?${params}`;
 }
 
@@ -295,15 +294,6 @@ const handlers = {
       usage,
       passwordSet: passwordSet(),
     };
-  },
-
-  // Popup: "[ unblock for today ]" — show the password step in this tab.
-  async openUnlock({ tabId }) {
-    const info = await tabInfo(tabId);
-    if (info.page || !info.url) return { ok: true };
-    const decision = await evaluate(tabId, info.url);
-    if (decision.action === 'block') await api.tabs.update(tabId, { url: blockPageUrl(decision, info.url, true) });
-    return { ok: true };
   },
 
   // Popup: "[ block this site ]".

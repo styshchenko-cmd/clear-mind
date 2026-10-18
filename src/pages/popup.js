@@ -1,4 +1,5 @@
 import { api } from '../lib/api.js';
+import { VERSION } from '../lib/model.js';
 import { formatClock, MINUTE } from '../lib/time.js';
 import { bar, icon, optionsUrl, send, supportedAdapter, usageTone } from '../lib/ui.js';
 
@@ -9,6 +10,7 @@ const openOptions = (hash) => {
   window.close();
 };
 
+$('foot-note').textContent = `v${VERSION} · all data stays local`;
 $('dashboard-icon').append(icon('grid', 18));
 $('dashboard-icon').addEventListener('click', (e) => (e.preventDefault(), openOptions('stats')));
 $('dashboard-link').addEventListener('click', (e) => (e.preventDefault(), openOptions('stats')));
@@ -58,7 +60,7 @@ function render() {
     ticker = setInterval(() => renderUsage(state.usage.usedMs + (Date.now() - opened)), 1000);
   }
 
-  $('unblock').hidden = !blocked;
+  $('unlock-hint').hidden = !blocked;
   $('block').hidden = blocked;
   const adapter = supportedAdapter(state.domain);
   $('modify').hidden = !adapter && !state.site;
@@ -70,11 +72,6 @@ function render() {
     $('foot-note').firstChild.addEventListener('click', (e) => (e.preventDefault(), openOptions('settings')));
   }
 }
-
-$('unblock').addEventListener('click', async () => {
-  await send('openUnlock', { tabId: tab.id });
-  window.close();
-});
 
 $('block').addEventListener('click', async () => {
   const result = await send('blockSite', { tabId: tab.id });

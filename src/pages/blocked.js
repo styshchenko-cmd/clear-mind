@@ -52,12 +52,10 @@ if (info.passwordSet) {
   $('pw').hidden = true;
 }
 
-// The form starts folded; opening it is one more deliberate step. Coming from
-// the popup's "unblock for today" it opens straight away.
+// The form starts folded; opening it is one more deliberate step.
 $('unlock-details').addEventListener('toggle', () => {
   if ($('unlock-details').open && !$('pw').hidden) $('pw').focus();
 });
-if (params.get('unlock') === '1') $('unlock-details').open = true;
 
 $('unlock-form').addEventListener('submit', async (event) => {
   event.preventDefault();

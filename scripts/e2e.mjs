@@ -242,6 +242,12 @@ try {
   const tabId = tabs.find((t) => t.url.includes('blocked.html')).id;
   const popup = await open(page(`popup.html?tab=${tabId}`));
   await shot(popup.sessionId, 'popup-blocked', 360, 600);
+  check('blocked popup: no unblock button, points to the block page', await evaluate(popup.sessionId,
+    `!document.getElementById('unblock') && !document.getElementById('unlock-hint').hidden && document.getElementById('block').hidden`));
+  check('popup footer shows the current version', (await evaluate(popup.sessionId, `document.getElementById('foot-note').textContent`)).startsWith('v1.1'));
+  await evaluate(popup.sessionId, `document.getElementById('modify').click()`);
+  await sleep(800);
+  check('popup "modify view" opens the site edit page', (await cdp('Target.getTargets')).targetInfos.some((t) => t.url.endsWith('options.html#site/reddit.com')));
 
   check('unlock form starts folded away', await evaluate(tab.sessionId, `!document.getElementById('unlock-details').open`));
   await evaluate(tab.sessionId, `document.querySelector('#unlock-details > summary').click()`);
@@ -265,11 +271,13 @@ try {
   check('unlocked tab opens the site', /^https?:\/\/reddit\.com\/$/.test(url), url);
   check('modify view CSS injected on reddit', await evaluate(tab.sessionId, `!!document.getElementById('clearmind-modify') && document.documentElement.dataset.cmRoute === 'home'`));
 
-  await cdp('Target.closeTarget', { targetId: popup.targetId });
+  await cdp('Target.closeTarget', { targetId: popup.targetId }).catch(() => {}); // already closed by "modify view"
   const popup2 = await open(page(`popup.html?tab=${tabId}`));
   await sleep(500);
   check('popup shows the unlock', (await evaluate(popup2.sessionId, `document.getElementById('status').textContent`)) === 'UNLOCKED');
   await shot(popup2.sessionId, 'popup-unlocked', 360, 600);
+  check('unlocked popup hides the hint and offers "block this site"', await evaluate(popup2.sessionId,
+    `document.getElementById('unlock-hint').hidden && !document.getElementById('block').hidden`));
 
   const other = await open('http://reddit.com/r/popular');
   await sleep(600);
@@ -310,6 +318,14 @@ try {
   await cdp('Page.navigate', { url: 'http://example.org/' }, other.sessionId);
   await sleep(900);
   check('unlisted site loads', /^https?:\/\/example\.org\/$/.test(await urlOf(other.targetId)));
+  const otherId = (await evaluate(options.sessionId, `chrome.tabs.query({}).then(ts => ts.map(t => [t.id, t.url]))`))
+    .find(([, u]) => /example\.org/.test(u))[0];
+  const popup3 = await open(page(`popup.html?tab=${otherId}`));
+  await sleep(400);
+  await evaluate(popup3.sessionId, `document.getElementById('block').click()`);
+  await sleep(1200);
+  url = await urlOf(other.targetId);
+  check('popup "block this site" adds it and blocks the tab', url.includes('blocked.html') && url.includes('d=example.org') && url.includes('r=block'), url);
 
   check('no uncaught errors', errors.length === 0, errors.join('\n'));
 } catch (error) {
