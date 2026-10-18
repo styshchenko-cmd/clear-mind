@@ -3,7 +3,7 @@
 
 import { api } from '../lib/api.js';
 import { findSiteDomain, hostOf, matchesDomain } from '../lib/domain.js';
-import { matchCategory, listSizes } from '../lib/lists.js';
+import { listOverlap, loadList, matchCategories, listSizes } from '../lib/lists.js';
 import * as model from '../lib/model.js';
 import { hashPassword, verifyPassword, MIN_PASSWORD_LENGTH } from '../lib/password.js';
 import { decide, redirectTarget, sanitizeSite } from '../lib/rules.js';
@@ -34,7 +34,7 @@ async function load() {
     local = {
       settings: s.settings ?? defaultSettings(),
       sites: s.sites ?? {},
-      auto: { ...model.defaultAuto(), ...s.auto },
+      auto: model.normalizeAuto(s.auto),
       days: s.days ?? {},
     };
   }
@@ -43,7 +43,8 @@ async function load() {
 
 // grants:  { [tabId]: { [domain]: until } }  — unlocks, per tab, until 00:00
 // pending: { [token]: { tabId, domain, category, url, startedAt, cooldownSec } }
-// active:  { tabId, domain, since } | null    — the listed site in the foreground
+// active:  { tabId, domain, category, since } | null — what is being timed in the
+//          foreground: a listed site (domain) or a time-limited category (category)
 async function session() {
   if (!sess) {
     const s = await api.storage.session.get(['grants', 'pending', 'active']);
@@ -53,13 +54,22 @@ async function session() {
 }
 
 const saveSession = () => api.storage.session.set(sess);
-const saveLocal = (...keys) => api.storage.local.set(Object.fromEntries(keys.map((k) => [k, local[k]])));
+// Our own writes come back through storage.onChanged, possibly after newer
+// in-memory changes; count them so only outside writes refresh the cache.
+const ownWrites = {};
+const saveLocal = (...keys) => {
+  for (const k of keys) ownWrites[k] = (ownWrites[k] ?? 0) + 1;
+  return api.storage.local.set(Object.fromEntries(keys.map((k) => [k, local[k]])));
+};
 
 api.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && local) {
-    for (const [key, { newValue }] of Object.entries(changes)) {
-      if (key in local && newValue !== undefined) local[key] = newValue;
+  if (area !== 'local') return;
+  for (const [key, { newValue }] of Object.entries(changes)) {
+    if (ownWrites[key]) {
+      ownWrites[key] -= 1;
+      continue;
     }
+    if (local && key in local && newValue !== undefined) local[key] = key === 'auto' ? model.normalizeAuto(newValue) : newValue;
   }
 });
 
@@ -77,11 +87,31 @@ function isGranted(tabId, domain, now) {
   return (sess.grants[tabId]?.[domain] ?? 0) > now;
 }
 
+function runningMs(now) {
+  return Math.min(MAX_SPAN, Math.max(0, now - Math.max(sess.active.since, startOfDay(now))));
+}
+
 function usedMs(domain, now) {
   const stored = local.days[dayKey(now)]?.sites[domain]?.ms ?? 0;
-  const active = sess.active;
-  if (active?.domain !== domain) return stored;
-  return stored + Math.min(MAX_SPAN, Math.max(0, now - Math.max(active.since, startOfDay(now))));
+  return sess.active?.domain === domain ? stored + runningMs(now) : stored;
+}
+
+function categoryMs(id, now) {
+  const stored = local.days[dayKey(now)]?.categories[id]?.ms ?? 0;
+  return sess.active?.category === id ? stored + runningMs(now) : stored;
+}
+
+// The strictest active category covering host (a domain can be in several
+// lists), with its limit when it is time-limited.
+const STRICTNESS = { full: 3, window: 2, limit: 1 };
+async function categoryMatch(host, now) {
+  const ids = model.activeCategories(local.auto, now);
+  const matches = ids.length ? await matchCategories(host, ids) : [];
+  const mode = (m) => local.auto.categories[m.category].mode;
+  const match = matches.sort((a, b) => STRICTNESS[mode(b)] - STRICTNESS[mode(a)])[0];
+  if (!match) return null;
+  const config = local.auto.categories[match.category];
+  return config.mode === 'limit' ? { ...match, limitMin: config.limitMin } : match;
 }
 
 async function evaluate(tabId, url, now = Date.now()) {
@@ -89,13 +119,13 @@ async function evaluate(tabId, url, now = Date.now()) {
   if (!host) return { action: 'allow', reason: 'not-web', domain: null };
   await load();
   await session();
-  const ids = model.activeCategories(local.auto, now);
-  const match = ids.length && !findSiteDomain(host, local.sites) ? await matchCategory(host, ids) : null;
+  const match = findSiteDomain(host, local.sites) ? null : await categoryMatch(host, now);
   return decide({
     host,
     sites: local.sites,
     day: local.days[dayKey(now)],
     usedMs: (domain) => usedMs(domain, now),
+    categoryMs: (id) => categoryMs(id, now),
     granted: (domain) => isGranted(tabId, domain, now),
     category: () => match,
   });
@@ -123,11 +153,9 @@ async function enforce(tabId, url) {
     await saveLocal('days');
   }
   recentBlocks.set(tabId, { url, at: now });
-  const wouldBlock = (host) => {
-    const domain = findSiteDomain(host, local.sites);
-    return Boolean(domain && local.sites[domain].mode !== 'watch');
-  };
-  const target = redirectTarget(decision.site, wouldBlock) ?? blockPageUrl(decision, url);
+  const redirectUrl = decision.site?.show === 'redirect' ? decision.site.redirectUrl : '';
+  const redirectBlocked = hostOf(redirectUrl) ? (await evaluate(tabId, redirectUrl, now)).action === 'block' : false;
+  const target = redirectTarget(decision.site, () => redirectBlocked) ?? blockPageUrl(decision, url);
   await api.tabs.update(tabId, { url: target }).catch(() => {});
   return decision;
 }
@@ -145,10 +173,14 @@ async function foreground() {
   if (!win?.focused) return null;
   const [tab] = await api.tabs.query({ active: true, windowId: win.id });
   if (!tab?.url) return null;
-  const host = hostOf(tab.url);
-  const domain = host ? findSiteDomain(host, local.sites) : null;
   const away = idleState === 'locked' || (idleState === 'idle' && !tab.audible);
-  return { tab, domain: away ? null : domain };
+  const host = hostOf(tab.url);
+  if (away || !host) return { tab, target: null };
+  const domain = findSiteDomain(host, local.sites);
+  if (domain) return { tab, target: { domain, category: null } };
+  // Time-limited categories are timed too; other category browsing is not.
+  const match = await categoryMatch(host, Date.now());
+  return { tab, target: match?.limitMin ? { domain: null, category: match.category } : null };
 }
 
 // Credits the running span, works out what is in the foreground now, and
@@ -157,14 +189,23 @@ async function track(now = Date.now()) {
   await load();
   await session();
   const previous = sess.active;
-  if (previous && local.sites[previous.domain]) {
-    const site = local.sites[previous.domain];
-    const start = Math.max(previous.since, now - MAX_SPAN);
-    addTime(local.days, previous.domain, start, now, site.mode === 'limit' ? site.limitMin : undefined);
-    await saveLocal('days');
+  const limitOf = (target) => {
+    if (target.category) {
+      const config = local.auto.categories[target.category];
+      return config?.mode === 'limit' ? config.limitMin : null;
+    }
+    const site = local.sites[target.domain];
+    return site ? (site.mode === 'limit' ? site.limitMin : undefined) : null;
+  };
+  if (previous) {
+    const limit = limitOf(previous);
+    if (limit !== null) {
+      addTime(local.days, previous, Math.max(previous.since, now - MAX_SPAN), now, limit);
+      await saveLocal('days');
+    }
   }
   const fg = await foreground();
-  sess.active = fg?.domain ? { tabId: fg.tab.id, domain: fg.domain, since: now } : null;
+  sess.active = fg?.target ? { tabId: fg.tab.id, ...fg.target, since: now } : null;
   await saveSession();
   if (fg?.tab) await enforce(fg.tab.id, fg.tab.url);
   await updateBadgeAndAlarm(now);
@@ -172,12 +213,22 @@ async function track(now = Date.now()) {
 
 async function updateBadgeAndAlarm(now) {
   const active = sess.active;
-  const site = active && local.sites[active.domain];
-  if (site?.mode === 'limit' && !isGranted(active.tabId, active.domain, now)) {
-    const left = site.limitMin * MINUTE - usedMs(active.domain, now);
+  let left = null;
+  if (active?.domain) {
+    const site = local.sites[active.domain];
+    if (site?.mode === 'limit' && !isGranted(active.tabId, active.domain, now)) left = site.limitMin * MINUTE - usedMs(active.domain, now);
+  } else if (active?.category) {
+    const config = local.auto.categories[active.category];
+    const tab = await api.tabs.get(active.tabId).catch(() => null);
+    const host = hostOf(tab?.url ?? '');
+    const match = host ? await categoryMatch(host, now) : null;
+    if (config.mode === 'limit' && match && !isGranted(active.tabId, match.domain, now)) left = config.limitMin * MINUTE - categoryMs(active.category, now);
+  }
+  if (left !== null) {
     await api.action.setBadgeBackgroundColor({ color: '#e8b45a' });
     await api.action.setBadgeText({ text: `${Math.max(0, Math.ceil(left / MINUTE))}m` });
     if (left > 0) await api.alarms.create(LIMIT_ALARM, { when: now + left + 500 });
+    else await api.alarms.clear(LIMIT_ALARM);
     return;
   }
   await api.action.setBadgeText({ text: '' });
@@ -196,6 +247,18 @@ async function passwordOk(password) {
   return verifyPassword(password ?? '', local.settings.password);
 }
 
+// Categories (not switched off) whose lists overlap `domain`.
+async function categoryOverlaps(domain) {
+  const found = [];
+  for (const c of model.CATEGORIES) {
+    const config = local.auto.categories[c.id];
+    if (config.mode === 'off') continue;
+    const overlap = listOverlap(domain, await loadList(c.id));
+    if (overlap) found.push({ category: c.id, label: c.label, rule: model.categoryRuleLabel(config), ...overlap });
+  }
+  return found;
+}
+
 const needPassword = (password) => ({
   ok: false,
   needPassword: true,
@@ -208,7 +271,9 @@ async function tabInfo(tabId) {
   const tab = await api.tabs.get(tabId).catch(() => null);
   if (!tab?.url) return { tab, url: null };
   if (tab.url.startsWith(PAGES)) {
-    const params = new URL(tab.url).searchParams;
+    let params = new URL(tab.url).searchParams;
+    // The cooldown page carries its block page's URL in `back`.
+    if (params.has('back')) params = new URL(params.get('back'), PAGES).searchParams;
     return { tab, url: params.get('u'), page: true, domain: params.get('d'), category: params.get('c') };
   }
   return { tab, url: tab.url };
@@ -223,30 +288,26 @@ const handlers = {
     const host = hostOf(info.url ?? '');
     if (!host) return { ok: true, host: null };
     const decision = info.page
-      ? { action: 'block', domain: info.domain, category: info.category, site: local.sites[info.domain] }
+      ? { action: 'block', domain: info.domain, category: info.category }
       : await evaluate(tabId, info.url, now);
-    const domain = decision.domain ?? findSiteDomain(host, local.sites);
+    const domain = decision.category ? null : decision.domain ?? findSiteDomain(host, local.sites);
     const site = domain ? local.sites[domain] : null;
+    const config = decision.category ? local.auto.categories[decision.category] : null;
+    // Time today against the limit, for sites and categories that are timed.
+    let usage = null;
+    if (site && site.mode !== 'block') usage = { usedMs: usedMs(site.domain, now), limitMin: site.mode === 'limit' ? site.limitMin : null };
+    else if (config?.mode === 'limit') usage = { usedMs: categoryMs(decision.category, now), limitMin: config.limitMin };
     return {
       ok: true,
       host,
-      domain: domain ?? host,
+      domain: decision.domain ?? host,
       site,
-      category: decision.category ? model.categoryById(decision.category)?.label : null,
+      rule: site ? model.ruleLabel(site) : config ? `${model.categoryById(decision.category).label.toLowerCase()} · ${model.categoryRuleLabel(config)}` : 'none',
       status: decision.action === 'block' ? 'blocked' : 'allowed',
       unlocked: decision.reason === 'unlocked',
-      usedMs: site ? usedMs(site.domain, now) : 0,
+      usage,
       passwordSet: passwordSet(),
     };
-  },
-
-  // Popup: "[ unblock for today ]" — show the password step in this tab.
-  async openUnlock({ tabId }) {
-    const info = await tabInfo(tabId);
-    if (info.page || !info.url) return { ok: true };
-    const decision = await evaluate(tabId, info.url);
-    if (decision.action === 'block') await api.tabs.update(tabId, { url: blockPageUrl(decision, info.url) });
-    return { ok: true };
   },
 
   // Popup: "[ block this site ]".
@@ -257,12 +318,12 @@ const handlers = {
     const host = hostOf(info.url ?? '');
     if (!host) return { ok: false, error: 'not a web page' };
     const now = Date.now();
-    const domain = findSiteDomain(host, local.sites) ?? (await matchCategory(host, model.activeCategories(local.auto, now)))?.domain;
-    if (domain && local.sites[domain]) {
+    const domain = findSiteDomain(host, local.sites) ?? (await categoryMatch(host, now))?.domain;
+    if (domain) {
       const day = (local.days[dayKey(now)] ??= model.emptyDay());
       day.forced[domain] = true;
       await saveLocal('days');
-    } else if (!domain) {
+    } else {
       local.sites[host] = { ...model.newSite(host, now), mode: 'block' };
       await saveLocal('sites');
     }
@@ -279,12 +340,15 @@ const handlers = {
     await load();
     const now = Date.now();
     const site = category ? null : local.sites[domain];
+    const config = category ? local.auto.categories[category] : null;
     return {
       ok: true,
       site,
       categoryLabel: category ? model.categoryById(category)?.label : null,
-      windowEnd: category && local.auto.window && now < local.auto.window.end && !model.categoryById(category)?.forced && local.auto.how !== 'full' ? local.auto.window.end : null,
-      usedMs: site ? usedMs(domain, now) : 0,
+      categoryRule: config ? model.categoryRuleLabel(config) : null,
+      categoryLimitMin: config?.mode === 'limit' ? config.limitMin : null,
+      windowEnd: config?.mode === 'window' && model.windowRunning(config, now) ? config.window.end : null,
+      usedMs: site ? usedMs(domain, now) : config?.mode === 'limit' ? categoryMs(category, now) : 0,
       unlocksThisWeek: unlocksSince(local.days, startOfDay(now) - 6 * DAY),
       passwordSet: passwordSet(),
       cooldownSec: site?.cooldownSec ?? model.DEFAULT_COOLDOWN_SEC,
@@ -300,7 +364,7 @@ const handlers = {
       tabId: sender.tab.id,
       domain,
       category: category || null,
-      url,
+      url: hostOf(url) ? url : null,
       startedAt: Date.now(),
       cooldownSec: local.sites[domain]?.cooldownSec ?? model.DEFAULT_COOLDOWN_SEC,
     };
@@ -345,10 +409,17 @@ const handlers = {
   },
 
   // Unlocking page: "[ keep it blocked ]" after the cooldown.
-  async revokeUnlock({ domain }, sender) {
+  async revokeUnlock({ domain, category }, sender) {
+    await load();
     await session();
     delete sess.grants[sender.tab.id]?.[domain];
     await saveSession();
+    const day = local.days[dayKey()];
+    const entry = category ? day?.categories[category] : day?.sites[domain];
+    if (entry?.unlocks) {
+      entry.unlocks -= 1;
+      await saveLocal('days');
+    }
     return { ok: true };
   },
 
@@ -360,7 +431,14 @@ const handlers = {
     });
     if (error) return { ok: false, error };
     const existing = local.sites[site.domain];
-    if (existing && model.loosens(existing, site) && !(await passwordOk(password))) return needPassword(password);
+    const overrides = (await categoryOverlaps(site.domain)).some((o) => model.overrideLoosens(site, local.auto.categories[o.category]));
+    // A new rule for a subdomain (old.reddit.com) takes over from its parent's
+    // (reddit.com): anything short of a block with the same cooldown loosens it.
+    const parentDomain = existing ? null : findSiteDomain(site.domain.split('.').slice(1).join('.'), local.sites);
+    const parent = parentDomain ? local.sites[parentDomain] : null;
+    const escapesParent = Boolean(parent && parent.mode !== 'watch' && (site.mode !== 'block' || site.cooldownSec < parent.cooldownSec));
+    const looser = (existing && model.loosens(existing, site)) || overrides || escapesParent;
+    if (looser && !(await passwordOk(password))) return needPassword(password);
     if (existing) site.addedAt = existing.addedAt;
     local.sites[site.domain] = site;
     await saveLocal('sites');
@@ -379,32 +457,42 @@ const handlers = {
     return { ok: true };
   },
 
-  async saveAuto({ categories, how, windowLength, password, startWindow }) {
+  // categories: {[id]: {mode, windowLength, limitMin}}; startWindow: a category
+  // id whose focus window starts now.
+  async saveAuto({ categories, startWindow, password }) {
     await load();
     const now = Date.now();
     const before = local.auto;
-    const next = {
-      ...before,
-      categories: Object.fromEntries(model.CATEGORIES.map((c) => [c.id, Boolean(categories?.[c.id])])),
-      how: how === 'full' ? 'full' : 'window',
-      windowLength: model.WINDOW_LENGTHS.some((w) => w.id === windowLength) ? windowLength : before.windowLength,
-      categorySince: { ...before.categorySince },
-    };
-    for (const c of model.CATEGORIES) {
-      if (next.categories[c.id] && !before.categories[c.id]) next.categorySince[c.id] = now;
+    const next = model.defaultAuto();
+    for (const { id } of model.CATEGORIES) {
+      const old = before.categories[id];
+      const input = categories?.[id] ?? old;
+      const mode = model.CATEGORY_MODES.includes(input.mode) ? input.mode : old.mode;
+      const limitMin = Math.round(Number(input.limitMin));
+      if (mode === 'limit' && !(limitMin >= 1 && limitMin <= 1440)) return { ok: false, error: 'Daily limit must be 1–1440 minutes' };
+      next.categories[id] = {
+        mode,
+        windowLength: model.WINDOW_LENGTHS.some((w) => w.id === input.windowLength) ? input.windowLength : old.windowLength,
+        limitMin: limitMin >= 1 && limitMin <= 1440 ? limitMin : old.limitMin,
+        window: mode === 'window' ? old.window : null,
+        since: mode === 'off' ? null : mode === old.mode ? old.since ?? now : now,
+      };
     }
-    if (next.how === 'full' && before.how !== 'full') next.fullSince = now;
-    if (next.how !== 'full') next.fullSince = null;
     if (startWindow) {
-      const end = model.WINDOW_LENGTHS.find((w) => w.id === next.windowLength).end(now);
+      const config = next.categories[startWindow];
+      if (!config) return { ok: false, error: 'unknown category' };
+      const end = model.WINDOW_LENGTHS.find((w) => w.id === config.windowLength).end(now);
       if (end <= now) return { ok: false, error: 'that time has already passed today' };
-      const running = before.window && now < before.window.end ? before.window : null;
-      next.window = { start: running?.start ?? now, end: Math.max(end, running?.end ?? 0) };
+      const running = model.windowRunning(before.categories[startWindow], now) ? before.categories[startWindow].window : null;
+      config.mode = 'window';
+      config.since = before.categories[startWindow].mode === 'window' ? before.categories[startWindow].since ?? now : now;
+      config.window = { start: running?.start ?? now, end: Math.max(end, running?.end ?? 0) };
     }
     if (model.autoLoosens(before, next, now) && !(await passwordOk(password))) return needPassword(password);
     local.auto = next;
     await saveLocal('auto');
     await enforceAll();
+    await track();
     return { ok: true };
   },
 
@@ -432,6 +520,14 @@ const handlers = {
     return { ok: true };
   },
 
+  // { [domain]: [{category, label, rule, covering, under}] } for the given sites.
+  async getOverlaps({ domains }) {
+    await load();
+    const result = {};
+    for (const domain of domains) result[domain] = await categoryOverlaps(domain);
+    return { ok: true, overlaps: result };
+  },
+
   async getListSizes() {
     return { ok: true, sizes: await listSizes(model.CATEGORIES.map((c) => c.id)) };
   },
@@ -444,7 +540,7 @@ const handlers = {
 };
 
 api.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  const handler = handlers[message?.type];
+  const handler = Object.hasOwn(handlers, message?.type) ? handlers[message.type] : null;
   // Only our own extension pages may change rules.
   if (!handler || sender.id !== api.runtime.id || !sender.url?.startsWith(api.runtime.getURL(''))) return false;
   serial(() => handler(message, sender)).then(sendResponse, (error) =>
@@ -460,10 +556,10 @@ api.runtime.onInstalled.addListener(({ reason }) =>
     await load();
     const stored = await api.storage.local.get(['settings', 'auto', 'sites', 'days']);
     if (!stored.settings) await saveLocal('settings');
-    if (!stored.auto) await saveLocal('auto');
+    await saveLocal('auto'); // also migrates the 1.0 auto-mode shape
     if (!stored.sites) await saveLocal('sites');
     if (!stored.days) await saveLocal('days');
-    if (reason === 'install') await api.tabs.create({ url: api.runtime.getURL('pages/options.html#settings') });
+    if (reason === 'install') await api.tabs.create({ url: api.runtime.getURL('pages/options.html#setup') });
   }),
 );
 

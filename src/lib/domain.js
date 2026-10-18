@@ -7,7 +7,8 @@ const LABEL = /^[a-z0-9-]{1,63}$/;
 // lowercase host without a leading "www.". Returns null when it isn't a domain.
 export function normalizeDomain(input) {
   if (typeof input !== 'string') return null;
-  let text = input.trim().toLowerCase();
+  // "*.example.com" and ".example.com" mean the same as a rule: every subdomain.
+  let text = input.trim().toLowerCase().replace(/^\*?\./, '');
   if (!text) return null;
   if (!/^[a-z][a-z0-9+.-]*:\/\//.test(text)) text = 'http://' + text;
   let host;

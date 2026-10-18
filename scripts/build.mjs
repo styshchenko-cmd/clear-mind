@@ -20,7 +20,14 @@ const TARGETS = {
     return {
       ...rest,
       background: { ...background, scripts: [service_worker] },
-      browser_specific_settings: { gecko: { id: 'clearmind@clearmind.local', strict_min_version: '121.0' } },
+      browser_specific_settings: {
+        gecko: {
+          id: 'clearmind@clearmind.local',
+          // 140 (ESR) is the first release with built-in data-consent, which AMO requires.
+          strict_min_version: '140.0',
+          data_collection_permissions: { required: ['none'] },
+        },
+      },
     };
   },
 };
@@ -31,7 +38,9 @@ for (const [name, patch] of Object.entries(TARGETS)) {
   const out = `${root}dist/${name}`;
   await rm(out, { recursive: true, force: true });
   await mkdir(out, { recursive: true });
-  await cp(src, out, { recursive: true, filter: (path) => !path.endsWith('.md') });
+  await cp(src, out, { recursive: true });
+  // The GPL text travels with every copy.
+  await cp(`${root}LICENSE`, `${out}/LICENSE`);
   await writeFile(`${out}/manifest.json`, JSON.stringify(patch(structuredClone(base)), null, 2) + '\n');
   const zip = `${root}dist/clearmind-${name}-${base.version}.zip`;
   await rm(zip, { force: true });

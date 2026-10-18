@@ -18,7 +18,7 @@
 
 <div class="stack g12">
 <h1 class="big-title"><span id="domain"></span><span class="cursor red" aria-hidden="true"></span></h1>
-<p id="reason" class="muted" style="margin: 0"></p>
+<p id="reason" class="muted flush"></p>
 </div>
 
 <div id="message-box" class="quote" hidden>
@@ -26,27 +26,30 @@
 <p id="message"></p>
 </div>
 
-<div class="grid-auto g12" style="--min: 180px; gap: 12px">
-<div id="time-tile" class="stack g4 box" style="padding: 12px 16px">
+<div class="grid-auto stat-tiles">
+<div id="time-tile" class="stack g4 box stat-box">
 <span class="label">time here today</span>
 <span id="time" class="strong amber num"></span>
 </div>
-<div class="stack g4 box" style="padding: 12px 16px">
+<div class="stack g4 box stat-box">
 <span class="label">unlocks this week</span>
 <span id="unlocks" class="strong num">0</span>
 </div>
 </div>
 
-<form id="unlock-form" class="stack g10" style="padding-top: 20px; border-top: 1px dashed var(--border)">
-<label id="unlock-label" for="pw" style="font-size: 13px; line-height: 20px" class="muted"></label>
+<details id="unlock-details" class="unlock">
+<summary class="btn">[ still need it? ]</summary>
+<form id="unlock-form" class="stack g10">
+<label id="unlock-label" for="pw" class="muted small"></label>
 <div class="row wrap-row g10">
-<input id="pw" type="password" class="input" placeholder="password" autocomplete="current-password" style="flex: 1 1 220px; width: auto; min-width: 0; font-size: 15px">
-<button id="unlock" type="submit" class="btn btn-strong" style="flex: 0 0 auto; font-size: 15px"></button>
+<input id="pw" type="password" class="input fill f15" placeholder="password" autocomplete="current-password">
+<button id="unlock" type="submit" class="btn btn-strong fixed f15"></button>
 </div>
 <p id="error" class="error" role="alert"></p>
 </form>
+</details>
 
-<div class="row wrap-row between g12" style="font-size: 13px; line-height: 20px">
+<div class="row wrap-row between g12 small">
 <a id="back" href="#">← back to where you were</a>
 <a id="edit" href="#" class="muted">edit this rule</a>
 </div>

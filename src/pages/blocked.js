@@ -15,26 +15,29 @@ const site = info.site;
 
 document.title = `${domain} · blocked`;
 $('domain').textContent = domain;
-$('rule').textContent = category ? `category: ${info.categoryLabel.toLowerCase()}` : `rule: ${ruleLabel(site)}`;
+$('rule').textContent = category ? `${info.categoryLabel?.toLowerCase() ?? category}: ${info.categoryRule ?? ''}` : `rule: ${ruleLabel(site)}`;
 
 const REASONS = {
   block: 'You put this site on your block list.',
   limit: `You put this site on your block list. Today's ${site?.limitMin} minutes are used up.`,
   manual: 'You blocked this site for the rest of today.',
 };
-$('reason').textContent = category
-  ? `This site is in "${info.categoryLabel}", a category you block.` +
-    (info.windowEnd ? ` The focus window ends at ${formatTimeOfDay(info.windowEnd)}.` : '')
-  : REASONS[reason] ?? REASONS.block;
+const CATEGORY_REASONS = {
+  category: `This site is in "${info.categoryLabel}", a category you block.` +
+    (info.windowEnd ? ` The focus window ends at ${formatTimeOfDay(info.windowEnd)}.` : ''),
+  'category-limit': `This site is in "${info.categoryLabel}". Today's ${info.categoryLimitMin} minutes for this category are used up.`,
+  manual: 'You blocked this site for the rest of today.',
+};
+$('reason').textContent = category ? CATEGORY_REASONS[reason] ?? CATEGORY_REASONS.category : REASONS[reason] ?? REASONS.block;
 
 if (site?.message) {
   $('message-box').hidden = false;
   $('message').textContent = `"${site.message}"`;
 }
 
-if (site) {
-  $('time').textContent =
-    site.mode === 'limit' ? `${formatClock(info.usedMs)} / ${formatClock(site.limitMin * MINUTE)}` : formatClock(info.usedMs);
+const limitMin = site ? (site.mode === 'limit' ? site.limitMin : null) : info.categoryLimitMin;
+if (site || limitMin) {
+  $('time').textContent = limitMin ? `${formatClock(info.usedMs)} / ${formatClock(limitMin * MINUTE)}` : formatClock(info.usedMs);
 } else {
   $('time-tile').hidden = true;
 }
@@ -43,12 +46,16 @@ $('unlocks').textContent = info.unlocksThisWeek;
 const cooldown = info.cooldownSec;
 $('unlock').textContent = `[ unlock → ${cooldown} s ]`;
 if (info.passwordSet) {
-  $('unlock-label').textContent = `Still need it? Enter your password — then a ${cooldown} s cooldown before the page opens.`;
-  $('pw').focus();
+  $('unlock-label').textContent = `Enter your password — then a ${cooldown} s cooldown before the page opens.`;
 } else {
-  $('unlock-label').textContent = `Still need it? No password is set yet, so it's just a ${cooldown} s cooldown.`;
+  $('unlock-label').textContent = `No password is set yet, so it's just a ${cooldown} s cooldown.`;
   $('pw').hidden = true;
 }
+
+// The form starts folded; opening it is one more deliberate step.
+$('unlock-details').addEventListener('toggle', () => {
+  if ($('unlock-details').open && !$('pw').hidden) $('pw').focus();
+});
 
 $('unlock-form').addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -70,4 +77,4 @@ $('back').addEventListener('click', async (event) => {
   else api.tabs.remove((await api.tabs.getCurrent()).id);
 });
 
-$('edit').href = optionsUrl(category ? 'auto' : `site/${encodeURIComponent(domain)}`);
+$('edit').href = optionsUrl(category ? `auto/${category}` : `site/${encodeURIComponent(domain)}`);

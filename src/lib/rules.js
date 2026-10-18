@@ -8,20 +8,21 @@ import { MINUTE } from './time.js';
 //   sites       configured sites
 //   day         today's Day record (usage, forced blocks)
 //   usedMs      (domain) => time used today including the running span
+//   categoryMs  (id) => same, for a time-limited category
 //   granted     (domain) => true when this tab holds an unlock for domain
-//   category    (host) => {category, domain} | null, for active categories only
+//   category    (host) => {category, domain, limitMin?} | null, active categories only
 //
 // Returns { action: 'allow' | 'block', domain, reason, site?, category? } where
-// reason is 'block' | 'limit' | 'manual' | 'category' for blocks.
-export function decide({ host, sites, day, usedMs, granted, category }) {
+// reason is 'block' | 'limit' | 'manual' | 'category' | 'category-limit' for blocks.
+export function decide({ host, sites, day, usedMs, categoryMs, granted, category }) {
   if (!host) return { action: 'allow', domain: null, reason: 'not-web' };
 
   const domain = findSiteDomain(host, sites);
   if (domain) {
     const site = sites[domain];
-    if (site.mode === 'watch') return { action: 'allow', domain, site, reason: 'watch' };
     if (granted(domain)) return { action: 'allow', domain, site, reason: 'unlocked' };
     if (day?.forced?.[domain]) return { action: 'block', domain, site, reason: 'manual' };
+    if (site.mode === 'watch') return { action: 'allow', domain, site, reason: 'watch' };
     if (site.mode === 'block') return { action: 'block', domain, site, reason: 'block' };
     if (usedMs(domain) >= site.limitMin * MINUTE) return { action: 'block', domain, site, reason: 'limit' };
     return { action: 'allow', domain, site, reason: 'within-limit' };
@@ -29,8 +30,12 @@ export function decide({ host, sites, day, usedMs, granted, category }) {
 
   const match = category(host);
   if (match) {
-    if (granted(match.domain)) return { action: 'allow', domain: match.domain, category: match.category, reason: 'unlocked' };
-    return { action: 'block', domain: match.domain, category: match.category, reason: 'category' };
+    const base = { domain: match.domain, category: match.category };
+    if (granted(match.domain)) return { action: 'allow', ...base, reason: 'unlocked' };
+    if (day?.forced?.[match.domain]) return { action: 'block', ...base, reason: 'manual' };
+    if (!match.limitMin) return { action: 'block', ...base, reason: 'category' };
+    if (categoryMs(match.category) >= match.limitMin * MINUTE) return { action: 'block', ...base, reason: 'category-limit' };
+    return { action: 'allow', ...base, reason: 'within-limit' };
   }
   return { action: 'allow', domain: null, reason: 'unlisted' };
 }
@@ -58,8 +63,8 @@ export function sanitizeSite(input, limits) {
   const show = input.show === 'redirect' ? 'redirect' : 'message';
   let redirectUrl = String(input.redirectUrl ?? '').trim();
   if (show === 'redirect') {
-    if (!/^https?:\/\//i.test(redirectUrl)) redirectUrl = 'https://' + redirectUrl;
-    if (!hostOf(redirectUrl)) return { error: 'Redirect needs a web address' };
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(redirectUrl)) redirectUrl = 'https://' + redirectUrl;
+    if (!normalizeDomain(hostOf(redirectUrl) ?? '')) return { error: 'Redirect needs a web address' };
   }
   const modify = {};
   for (const [key, on] of Object.entries(input.modify ?? {})) modify[key] = Boolean(on);

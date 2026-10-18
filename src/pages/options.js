@@ -14,13 +14,14 @@ const sidebarFoot = document.getElementById('sidebar-foot');
 let data = await load();
 let statsRange = 'today';
 let listSizes = null;
+let autoSelected = 'adult';
 
 async function load() {
   const s = await readLocal(['settings', 'sites', 'auto', 'days']);
   return {
     settings: s.settings ?? { password: null, statsSince: Date.now() },
     sites: s.sites ?? {},
-    auto: { ...model.defaultAuto(), ...s.auto },
+    auto: model.normalizeAuto(s.auto),
     days: s.days ?? {},
   };
 }
@@ -80,9 +81,9 @@ function renderSidebar(route) {
         h('div', { class: 'nav' }, Object.keys(data.sites).sort().map((d) =>
           h('a', { href: `#site/${encodeURIComponent(d)}`, 'aria-current': d === route.domain ? 'page' : null, class: 'wrap' }, d))))));
   } else {
-    const items = [['stats', 'stats'], ['sites', 'blocked sites'], ['auto', 'auto mode'], ['settings', 'settings']];
+    const items = [['stats', 'stats'], ['sites', 'blocked sites'], ['auto', 'auto mode'], ['settings', 'settings'], ['help', 'help']];
     nav.append(h('div', { class: 'nav' }, items.map(([id, text]) =>
-      h('a', { href: `#${id}`, 'aria-current': route.view === id ? 'page' : null }, text))));
+      h('a', { href: `#${id}`, 'aria-current': route.view === id || (id === 'help' && route.view === 'setup') ? 'page' : null }, text))));
   }
   sidebarFoot.replaceChildren(`v${model.VERSION} · data stored locally`, h('br'),
     data.settings.password ? 'password set ✓' : h('a', { href: '#settings', class: 'amber' }, 'no password set'));
@@ -108,7 +109,7 @@ function viewStats() {
     tile('time on listed sites', formatDuration(s.ms), s.allowedMs ? `of ${formatDuration(s.allowedMs)} allowed` : 'no daily limits set'),
     tile('blocks shown', s.blocks, 'times the block page appeared', 'red'),
     tile('unlocks', s.unlocks, 'password + cooldown', 'amber'),
-    tile('days under limit', s.streak, 'current streak', 'green'));
+    tile('days under limit', s.streak ?? '—', s.streak === null ? 'no daily limits set' : 'current streak', 'green'));
 
   const siteGrid = { gridTemplateColumns: 'minmax(120px, 1.2fr) minmax(0, 3fr) auto' };
   const siteRows = s.siteRows.map((row) => {
@@ -130,19 +131,25 @@ function viewStats() {
   });
 
   const catGrid = { gridTemplateColumns: 'minmax(140px, 1.6fr) minmax(120px, 1.4fr) minmax(0, 3fr) auto' };
-  const lengthLabel = model.WINDOW_LENGTHS.find((w) => w.id === data.auto.windowLength)?.label ?? '';
   const catRows = s.categoryRows.map((row) => {
+    const { config } = row;
     let rule;
     let progress;
-    if (row.full) {
-      const days = daysBetween(row.since, now);
+    if (config.mode === 'full') {
+      const since = config.since ?? now;
+      const days = daysBetween(since, now);
       rule = h('span', { class: 'red' }, 'always on');
       progress = [bar(1, 'red', 'blocked all day'),
         h('span', { class: 'caption' }, days === 0 ? 'blocked all day · since today'
-          : `blocked all day · ${days} day${days === 1 ? '' : 's'} since ${formatShortDate(row.since)}`)];
+          : `blocked all day · ${days} day${days === 1 ? '' : 's'} since ${formatShortDate(since)}`)];
+    } else if (config.mode === 'limit') {
+      const fraction = row.ms / row.limitMs;
+      rule = h('span', { class: 'amber' }, `time limit · ${config.limitMin} min / day`);
+      progress = [bar(fraction, usageTone(fraction), 'time used'),
+        h('span', { class: 'caption' }, `${formatDuration(row.ms)} of ${formatDuration(row.limitMs)} used`)];
     } else {
-      rule = h('span', { class: 'amber' }, `focus window · ${lengthLabel}`);
-      const w = row.window;
+      rule = h('span', { class: 'amber' }, model.categoryRuleLabel(config));
+      const w = config.window;
       if (w && w.end > todayAt(0, 0, now)) {
         const elapsed = Math.min(now, w.end) - w.start;
         const running = now < w.end;
@@ -195,6 +202,19 @@ function viewStats() {
 
 // ---------------------------------------------------------------- blocked sites
 
+// "Social feeds" (focus window · 2 hours), for each category overlapping a site.
+const overlapNames = (overlaps) => overlaps.map((o) => `"${o.label}" (${o.rule})`).join(', ');
+
+function overlapNotice(domain, overlaps) {
+  const covered = overlaps.filter((o) => o.covering);
+  const inside = overlaps.filter((o) => !o.covering);
+  return h('div', { class: 'notice', role: 'note' },
+    h('span', { class: 'amber medium' }, 'overrides auto mode'),
+    covered.length ? h('span', {}, `${domain} is also in ${overlapNames(covered)}.`) : null,
+    inside.map((o) => h('span', {}, `${o.under} ${o.label} domain${o.under === 1 ? '' : 's'} sit under ${domain} (${o.examples.join(', ')}${o.under > o.examples.length ? ', …' : ''}).`)),
+    h('span', { class: 'caption' }, 'This entry overrides auto mode for this domain: the rule below applies instead of the category. A rule weaker than the category asks for your password.'));
+}
+
 function siteSummary(site) {
   const adapter = supportedAdapter(site.domain);
   const parts = [];
@@ -246,7 +266,8 @@ function viewSites() {
       if (result.ok) render();
     };
     return h('div', { class: 'tr', style: grid },
-      h('div', { class: 'stack g2', style: { minWidth: 0 } }, h('span', { class: 'medium wrap' }, site.domain), h('span', { class: 'caption' }, siteSummary(site))),
+      h('div', { class: 'stack g2', style: { minWidth: 0 } }, h('span', { class: 'medium wrap' }, site.domain), h('span', { class: 'caption' }, siteSummary(site)),
+        h('span', { class: 'caption amber slot', dataset: { overlap: site.domain } })),
       h('span', { class: ruleTone }, model.ruleLabel(site)),
       todayCell,
       h('div', { class: 'row g8', style: { justifyContent: 'flex-end' } },
@@ -254,6 +275,15 @@ function viewSites() {
         h('button', { type: 'button', class: 'icon-btn quiet', 'aria-label': `Remove ${site.domain}`, onclick: remove }, icon('trash'))),
       confirmHost, rowError);
   });
+
+  if (sites.length) {
+    send('getOverlaps', { domains: sites.map((s) => s.domain) }).then((r) => {
+      for (const [domain, overlaps] of Object.entries(r.overlaps ?? {})) {
+        const slot = main.querySelector(`[data-overlap="${CSS.escape(domain)}"]`);
+        if (slot && overlaps.length) slot.textContent = `overrides auto mode: ${overlaps.map((o) => o.label.toLowerCase()).join(', ')}`;
+      }
+    });
+  }
 
   return [
     pageHeader('blocked sites', `${sites.length} site${sites.length === 1 ? '' : 's'} · ${withLimits} with limits`),
@@ -271,6 +301,11 @@ function viewSite(domain) {
   const existing = data.sites[domain];
   const site = existing ? structuredClone(existing) : model.newSite(domain);
   const adapter = supportedAdapter(domain);
+  const notice = h('div', { class: 'slot' });
+  send('getOverlaps', { domains: [domain] }).then((r) => {
+    const overlaps = r.overlaps?.[domain] ?? [];
+    if (overlaps.length) notice.replaceChildren(overlapNotice(domain, overlaps));
+  });
   const error = h('p', { class: 'error', role: 'alert', style: { margin: 0 } });
   const confirmHost = h('div', { class: 'slot' });
 
@@ -323,7 +358,7 @@ function viewSite(domain) {
     form.append(h('section', { class: 'stack g16' },
       sectionHead('modify view', `${adapter.label} is supported`, 'green'),
       h('p', { class: 'caption', style: { margin: 0 } }, 'Applies while the site is allowed. Keeps the parts you came for, hides the parts that keep you there.'),
-      h('div', { class: 'grid-auto', style: { '--min': '240px' } }, options.map((o) =>
+      h('div', { class: 'grid-auto', style: { '--min': '200px' } }, options.map((o) =>
         h('label', { class: 'option center' },
           h('input', { type: 'checkbox', name: 'modify', value: o.key, checked: site.modify[o.key] ?? o.default }),
           h('span', {}, o.label))))));
@@ -343,7 +378,7 @@ function viewSite(domain) {
 
   const save = async () => {
     error.textContent = '';
-    const result = await withPassword(confirmHost, 'This loosens the rule. Enter your password to save it.',
+    const result = await withPassword(confirmHost, 'This loosens a rule (or overrides a stricter auto-mode category). Enter your password to save it.',
       (password) => send('saveSite', { site: collect(), password }), error);
     if (result.ok) location.hash = 'sites';
   };
@@ -369,6 +404,7 @@ function viewSite(domain) {
       h('div', { class: 'row wrap-row g8' },
         h('span', { class: 'chip' }, existing ? `added ${formatShortDate(existing.addedAt)}` : 'not saved yet'),
         adapter ? h('span', { class: 'chip on' }, 'modify supported') : null)),
+    notice,
     form,
   ];
 }
@@ -379,49 +415,96 @@ function formatCount(n) {
   return n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k` : String(n);
 }
 
-function viewAuto() {
+// The short state shown on a category card.
+function categoryBadge(config, now) {
+  if (config.mode === 'off') return '[ off ]';
+  if (config.mode === 'full') return '[ always ]';
+  if (config.mode === 'limit') return `[ ${config.limitMin}m / day ]`;
+  return model.windowRunning(config, now) ? `[ until ${formatTimeOfDay(config.window.end)} ]` : '[ window ]';
+}
+
+function viewAuto(selected) {
   const now = Date.now();
+  if (selected && model.categoryById(selected)) autoSelected = selected;
   const draft = structuredClone(data.auto);
   const error = h('p', { class: 'error', role: 'alert', style: { margin: 0 } });
   const confirmHost = h('div', { class: 'slot' });
   const onCount = h('span', {});
-  const recount = () => (onCount.textContent = `${model.CATEGORIES.filter((c) => draft.categories[c.id]).length} on`);
+  const panel = h('section', { class: 'stack g16' });
 
-  const toggles = model.CATEGORIES.map((c) => {
-    const button = h('button', {
-      type: 'button', class: 'toggle', 'aria-pressed': String(Boolean(draft.categories[c.id])),
-      onclick: () => {
-        draft.categories[c.id] = !draft.categories[c.id];
-        button.setAttribute('aria-pressed', String(draft.categories[c.id]));
-        button.querySelector('.state').textContent = draft.categories[c.id] ? '[ on ]' : '[ off ]';
-        recount();
-      },
+  const cards = model.CATEGORIES.map((c) => h('button', {
+    type: 'button', class: 'toggle', dataset: { category: c.id },
+    onclick: () => {
+      autoSelected = c.id;
+      paint();
     },
-    h('span', { class: 'stack g2' }, h('span', { class: 'medium' }, c.label), h('span', { class: 'caption' }, c.hint)),
-    h('span', { class: 'state' }, draft.categories[c.id] ? '[ on ]' : '[ off ]'));
-    return button;
-  });
-  recount();
+  },
+  h('span', { class: 'stack g2' }, h('span', { class: 'medium' }, c.label), h('span', { class: 'caption' }, c.hint)),
+  h('span', { class: 'state' })));
 
-  const select = h('select', { class: 'input', 'aria-label': 'Focus window length' },
-    model.WINDOW_LENGTHS.map((w) => h('option', {
-      value: w.id, selected: w.id === draft.windowLength, disabled: w.end(now) <= now,
-    }, w.label)));
+  function paint() {
+    for (const card of cards) {
+      const config = draft.categories[card.dataset.category];
+      card.setAttribute('aria-pressed', String(card.dataset.category === autoSelected));
+      const state = card.querySelector('.state');
+      state.textContent = categoryBadge(config, now);
+      state.classList.toggle('on', config.mode !== 'off');
+    }
+    onCount.textContent = `${model.CATEGORIES.filter((c) => draft.categories[c.id].mode !== 'off').length} on`;
+    paintPanel();
+  }
 
-  const running = data.auto.window && now < data.auto.window.end ? data.auto.window : null;
-  const how = (value) => h('input', { type: 'radio', name: 'how', value, checked: draft.how === value, style: { marginTop: '2px' } });
+  function paintPanel() {
+    const category = model.categoryById(autoSelected);
+    const config = draft.categories[category.id];
+    const saved = data.auto.categories[category.id];
+    const running = model.windowRunning(saved, now) ? saved.window : null;
+
+    const radio = (mode) => h('input', {
+      type: 'radio', name: 'how', value: mode, checked: config.mode === mode, style: { marginTop: '2px' },
+      onchange: () => {
+        config.mode = mode;
+        paint();
+      },
+    });
+    const card = (mode, title, caption, ...extra) => h('label', { class: 'option', style: { padding: '16px' } }, radio(mode),
+      h('span', { class: 'stack g10 grow', style: { minWidth: 0 } },
+        h('span', { class: 'stack g2' }, h('span', { class: 'medium' }, title), h('span', { class: 'caption' }, caption)),
+        extra));
+
+    const select = h('select', {
+      class: 'input', 'aria-label': 'Focus window length',
+      onchange: () => (config.windowLength = select.value),
+    }, model.WINDOW_LENGTHS.map((w) => h('option', { value: w.id, selected: w.id === config.windowLength, disabled: w.end(now) <= now }, w.label)));
+    const limit = h('input', {
+      type: 'number', class: 'input short', min: 1, max: 1440, value: config.limitMin, 'aria-label': 'Daily limit in minutes',
+      oninput: () => (config.limitMin = limit.value),
+    });
+
+    panel.replaceChildren(
+      sectionHead(`how hard · "${category.label}"`,
+        running ? `focus window running · until ${formatTimeOfDay(running.end)}` : `now: ${model.categoryRuleLabel(saved)}`,
+        running ? 'amber' : ''),
+      h('fieldset', { class: 'grid-auto', style: { '--min': '200px' } },
+        h('legend', { class: 'sr-only' }, `Block strength for ${category.label}`),
+        card('off', 'Off', 'not blocked'),
+        card('window', 'Block for some time', 'a focus window · unblocks itself after',
+          h('span', { class: 'row wrap-row g8' }, select,
+            h('button', { type: 'button', class: 'btn btn-primary', onclick: (e) => (e.preventDefault(), submit(category.id)) }, '[ start ]'))),
+        card('limit', 'Time limit', 'its sites share a daily allowance',
+          h('span', { class: 'row g10' }, limit, h('span', { class: 'muted' }, 'min / day'))),
+        card('full', 'Block completely', 'always on · password + cooldown to open anything',
+          h('span', { class: 'caption amber' }, 'turning this off later asks for the password too'))));
+  }
 
   const submit = async (startWindow) => {
     error.textContent = '';
-    const payload = {
-      categories: draft.categories,
-      how: document.querySelector('input[name="how"]:checked').value,
-      windowLength: select.value,
-      startWindow,
-    };
     const result = await withPassword(confirmHost, 'This loosens auto mode. Enter your password to save it.',
-      (password) => send('saveAuto', { ...payload, password }), error);
-    if (result.ok) location.hash = 'stats';
+      (password) => send('saveAuto', { categories: draft.categories, startWindow, password }), error);
+    if (result.ok) {
+      data = await load();
+      render();
+    }
   };
 
   const sizes = h('span', { class: 'caption' }, 'lists: loading…');
@@ -429,30 +512,94 @@ function viewAuto() {
   if (listSizes) showSizes(listSizes);
   else send('getListSizes').then((r) => r.ok && showSizes((listSizes = r.sizes)));
 
+  paint();
   return [
     h('div', { class: 'stack g4' },
       label('auto mode'),
       h('h1', { class: 'page-title' }, 'Block by category'),
       h('p', { class: 'muted', style: { margin: '4px 0 0', maxWidth: '640px' } },
-        'Built-in domain lists, kept on your device. Pick the categories, then how hard the block is. Sites you configured one by one keep their own rules. Adult content and gambling are always blocked completely.')),
-    h('section', { class: 'stack g16' }, sectionHead('categories', onCount), h('div', { class: 'grid-auto' }, toggles)),
-    h('section', { class: 'stack g16' },
-      sectionHead('how hard', running ? `focus window running · until ${formatTimeOfDay(running.end)}` : null, 'amber'),
-      h('fieldset', { class: 'grid-auto', style: { '--min': '300px' } },
-        h('legend', { class: 'sr-only' }, 'Block strength'),
-        h('label', { class: 'option', style: { padding: '16px' } }, how('window'),
-          h('span', { class: 'stack g10 grow', style: { minWidth: 0 } },
-            h('span', { class: 'stack g2' }, h('span', { class: 'medium' }, 'Block for some time'), h('span', { class: 'caption' }, 'a focus window · unblocks itself after')),
-            h('span', { class: 'row wrap-row g8' }, select,
-              h('button', { type: 'button', class: 'btn btn-primary', onclick: (e) => (e.preventDefault(), submit(true)) }, '[ start ]')))),
-        h('label', { class: 'option', style: { padding: '16px' } }, how('full'),
-          h('span', { class: 'stack g10 grow', style: { minWidth: 0 } },
-            h('span', { class: 'stack g2' }, h('span', { class: 'medium' }, 'Block completely'), h('span', { class: 'caption' }, 'always on · password + cooldown to open anything')),
-            h('span', { class: 'caption amber' }, 'turning this off later asks for the password too'))))),
+        'Built-in domain lists, kept on your device. Pick a category, then choose how hard it is blocked. Sites you configured one by one keep their own rules.')),
+    h('section', { class: 'stack g16' }, sectionHead('categories', onCount), h('div', { class: 'grid-auto' }, cards)),
+    panel,
     h('div', { class: 'stack g12', style: { paddingTop: '20px', borderTop: '1px solid var(--border)' } },
       confirmHost, error,
       h('div', { class: 'row wrap-row between g12' }, sizes,
-        h('button', { type: 'button', class: 'btn btn-primary', onclick: () => submit(false) }, '[ save ]'))),
+        h('button', { type: 'button', class: 'btn btn-primary', onclick: () => submit(null) }, '[ save ]'))),
+  ];
+}
+
+// ---------------------------------------------------------------- setup & help
+
+const GUIDE = [
+  ['stats', 'stats', 'Time on your listed sites, blocks shown, unlocks and your streak of days under the limit.'],
+  ['sites', 'blocked sites', 'Lets you block or time-limit certain sites, write the message the block page shows, and hide feeds with modify view.'],
+  ['auto', 'auto mode', 'Blocks whole categories (adult, social feeds, news, video, shopping, gambling): off, for a focus window, with a daily limit, or always.'],
+  ['settings', 'settings', 'Change your password or reset the statistics.'],
+  ['help', 'help', 'This page.'],
+];
+
+const EVERYDAY = [
+  ['toolbar icon', 'Shows the current site, its rule and time left today. Block the site you are on with one click.'],
+  ['block page', 'Appears instead of a blocked site, with your message. "[ still need it? ]" → password → a short cooldown → the site opens in that tab until you close it or midnight.'],
+];
+
+// First-run setup (`setup`) and the help page share this view; setup asks for
+// the password right here, help points to settings instead.
+function viewGuide(setup) {
+  const hasPassword = Boolean(data.settings.password);
+  let top;
+  if (setup && !hasPassword) {
+    const error = h('p', { class: 'error', role: 'alert', style: { margin: 0 } });
+    const field = (id, text) => h('div', { class: 'field' }, h('label', { for: id }, text),
+      h('input', { id, type: 'password', class: 'input', autocomplete: 'new-password' }));
+    const setPassword = async (e) => {
+      e.preventDefault();
+      error.textContent = '';
+      const next = document.getElementById('setup-pw').value;
+      if (next.length < MIN_PASSWORD_LENGTH) return (error.textContent = `Use at least ${MIN_PASSWORD_LENGTH} characters.`);
+      if (next !== document.getElementById('setup-pw-repeat').value) return (error.textContent = "The passwords don't match.");
+      const result = await send('setPassword', { next });
+      if (!result.ok) return (error.textContent = result.error);
+      data = await load();
+      render();
+    };
+    top = h('section', { class: 'stack g16', style: { maxWidth: '640px' } },
+      sectionHead('unblock password', 'step 1', 'amber'),
+      h('p', { style: { margin: 0 } }, 'Your key for unblocking sites. It cannot be recovered.'),
+      h('form', { class: 'stack g12', onsubmit: setPassword },
+        h('div', { class: 'grid-auto', style: { '--min': '240px', gap: '12px' } },
+          field('setup-pw', 'Password'), field('setup-pw-repeat', 'Repeat password')),
+        error,
+        h('div', { class: 'row wrap-row between g12' },
+          h('span', { class: 'caption' }, `at least ${MIN_PASSWORD_LENGTH} characters · stored as a hash on this device`),
+          h('button', { type: 'submit', class: 'btn btn-primary' }, '[ set password ]'))));
+  } else if (setup) {
+    top = h('section', { class: 'stack g16', style: { maxWidth: '640px' } },
+      sectionHead('unblock password', 'set ✓', 'green'),
+      h('p', { style: { margin: 0 } }, 'Done. Next, add the first site you want to keep away from.'),
+      h('div', {}, h('a', { href: '#sites', class: 'btn btn-primary' }, '[ add your first site → ]')));
+  } else {
+    top = h('section', { class: 'stack g16', style: { maxWidth: '640px' } },
+      sectionHead('unblock password', hasPassword ? 'set ✓' : 'not set', hasPassword ? 'green' : 'amber'),
+      h('p', { style: { margin: 0 } }, 'Your key for unblocking sites. It cannot be recovered. ',
+        h('a', { href: '#settings', style: { whiteSpace: 'nowrap' } }, hasPassword ? 'change it in settings →' : 'set it up in settings →')));
+  }
+
+  const rows = (items, link) => h('div', { class: 'table' }, items.map(([id, name, text]) =>
+    h('div', { class: 'tr', style: { gridTemplateColumns: 'minmax(130px, 180px) 1fr', alignItems: 'start' } },
+      link ? h('a', { href: `#${id}`, class: 'medium' }, name) : h('span', { class: 'medium' }, id),
+      h('span', { class: 'muted' }, link ? text : name))));
+
+  return [
+    pageHeader(setup ? 'setup' : 'help', setup ? 'Welcome to ClearMind' : 'How ClearMind works'),
+    top,
+    h('section', { class: 'stack g16', style: { maxWidth: '860px' } },
+      sectionHead('the pages on the left'),
+      rows(GUIDE, true)),
+    h('section', { class: 'stack g16', style: { maxWidth: '860px' } },
+      sectionHead('while you browse'),
+      rows(EVERYDAY, false)),
+    h('p', { class: 'caption', style: { margin: 0 } }, 'Everything stays on this device. ClearMind makes no network requests.'),
   ];
 }
 
@@ -520,16 +667,22 @@ function viewSettings() {
 // ---------------------------------------------------------------- routing
 
 function route() {
-  const hash = decodeURIComponent(location.hash.slice(1));
+  let hash = '';
+  try {
+    hash = decodeURIComponent(location.hash.slice(1));
+  } catch {
+    // A malformed hash falls through to the default view.
+  }
   if (hash.startsWith('site/')) return { view: 'site', domain: normalizeDomain(hash.slice(5)) };
-  return { view: ['stats', 'sites', 'auto', 'settings'].includes(hash) ? hash : 'stats' };
+  if (hash.startsWith('auto/')) return { view: 'auto', category: hash.slice(5) };
+  return { view: ['stats', 'sites', 'auto', 'settings', 'setup', 'help'].includes(hash) ? hash : 'stats' };
 }
 
 function render() {
   const r = route();
   if (r.view === 'site' && !r.domain) return void (location.hash = 'sites');
   renderSidebar(r);
-  const views = { stats: viewStats, sites: viewSites, auto: viewAuto, settings: viewSettings, site: () => viewSite(r.domain) };
+  const views = { stats: viewStats, sites: viewSites, auto: () => viewAuto(r.category), settings: viewSettings, setup: () => viewGuide(true), help: () => viewGuide(false), site: () => viewSite(r.domain) };
   main.replaceChildren(...views[r.view]().filter(Boolean));
   document.title = `ClearMind · ${r.view === 'site' ? r.domain : r.view}`;
 }
@@ -543,7 +696,9 @@ window.addEventListener('hashchange', () => {
 onLocalChange(async () => {
   data = await load();
   const view = route().view;
-  if (view === 'stats' || view === 'sites') render();
+  // Don't wipe what the user is typing or an open password prompt.
+  const busy = main.querySelector('.confirm') || main.contains(document.activeElement) && document.activeElement.matches('input, textarea');
+  if ((view === 'stats' || view === 'sites') && !busy) render();
   else renderSidebar(route());
 });
 

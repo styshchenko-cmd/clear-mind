@@ -86,6 +86,8 @@ ws.onmessage = ({ data }) => {
     const { resolve, reject } = waiting.get(msg.id);
     waiting.delete(msg.id);
     msg.error ? reject(new Error(`${msg.error.message}`)) : resolve(msg.result);
+  } else if (msg.method === 'Runtime.consoleAPICalled' && msg.params.type === 'error') {
+    errors.push(msg.params.args.map((a) => a.value ?? a.description).join(' '));
   } else if (msg.method === 'Runtime.exceptionThrown') {
     errors.push(msg.params.exceptionDetails.exception?.description ?? msg.params.exceptionDetails.text);
   }
@@ -152,14 +154,34 @@ try {
   const page = (path) => `chrome-extension://${extId}/pages/${path}`;
 
   const { targetInfos } = await cdp('Target.getTargets');
-  check('settings opened on install', targetInfos.some((t) => t.url.includes('options.html#settings')));
+  check('setup page opened on install', targetInfos.some((t) => t.url.endsWith('options.html#setup')));
 
-  const options = await open(page('options.html#settings'));
-  await shot(options.sessionId, 'options-settings-first-run');
+  const options = await open(page('options.html#setup'));
+  await shot(options.sessionId, 'options-setup', 1280, 900);
   const send = (msg) => evaluate(options.sessionId, `chrome.runtime.sendMessage(${JSON.stringify(msg)})`);
 
-  const pw = await send({ type: 'setPassword', next: 'clearmind123' });
-  check('set password', pw?.ok, JSON.stringify(pw));
+  // Set the password through the setup form, as a new user would.
+  await evaluate(options.sessionId, `(() => {
+    document.getElementById('setup-pw').value = 'short';
+    document.getElementById('setup-pw-repeat').value = 'short';
+    document.querySelector('#setup-pw').form.requestSubmit();
+  })()`);
+  await sleep(300);
+  check('setup rejects a short password', (await evaluate(options.sessionId, `document.querySelector('.error').textContent`)).includes('at least'));
+  await evaluate(options.sessionId, `(() => {
+    document.getElementById('setup-pw').value = 'clearmind123';
+    document.getElementById('setup-pw-repeat').value = 'clearmind123';
+    document.querySelector('#setup-pw').form.requestSubmit();
+  })()`);
+  await sleep(1500);
+  const stored = await evaluate(options.sessionId, `chrome.storage.local.get('settings').then((s) => Boolean(s.settings.password))`);
+  check('set password from the setup page', stored && (await evaluate(options.sessionId, `document.body.textContent.includes('add your first site')`)));
+  await shot(options.sessionId, 'options-setup-done', 1280, 900);
+  await evaluate(options.sessionId, `location.hash = 'help'`);
+  await sleep(400);
+  check('help shows the guide with a settings link instead of the form', await evaluate(options.sessionId,
+    `!document.getElementById('setup-pw') && !!document.querySelector('a[href="#settings"]') && document.body.textContent.includes('blocked sites')`));
+  await shot(options.sessionId, 'options-help', 1280, 900);
   const site = (domain, extra) => ({
     domain, mode: 'limit', limitMin: 30, cooldownSec: 5, show: 'message', redirectUrl: '', modify: {},
     message: 'Go write the thing. Reddit will still be here at 18:00.',
@@ -178,19 +200,34 @@ try {
     const min = 60000, days = {};
     [62, 48, 140, 70, 55, 80].forEach((m, i) => days[key(6 - i)] = { sites: { 'reddit.com': { ms: m * min * 0.4, blocks: 1, unlocks: 0, limitMin: 30 }, 'youtube.com': { ms: m * min * 0.6, blocks: 0, unlocks: i === 2 ? 1 : 0, limitMin: 60 } }, categories: {}, forced: {} });
     days[key(4)].sites['reddit.com'].ms = 45 * min;
-    days[key(0)] = { sites: { 'reddit.com': { ms: 31 * min, blocks: 2, unlocks: 0, limitMin: 30 }, 'x.com': { ms: 12 * min, blocks: 0, unlocks: 0, limitMin: 20 }, 'youtube.com': { ms: 30 * min, blocks: 0, unlocks: 0, limitMin: 60 }, 'instagram.com': { ms: 0, blocks: 3, unlocks: 0 } }, categories: { social: { blocks: 4, unlocks: 0 } }, forced: {} };
+    days[key(0)] = { sites: { 'reddit.com': { ms: 31 * min, blocks: 2, unlocks: 0, limitMin: 30 }, 'x.com': { ms: 12 * min, blocks: 0, unlocks: 0, limitMin: 20 }, 'youtube.com': { ms: 30 * min, blocks: 0, unlocks: 0, limitMin: 60 }, 'instagram.com': { ms: 0, blocks: 3, unlocks: 0 } }, categories: { social: { blocks: 4, unlocks: 0 }, news: { ms: 2 * min, blocks: 0, unlocks: 0, limitMin: 1 } }, forced: {} };
     const { settings } = await chrome.storage.local.get('settings');
     await chrome.storage.local.set({ days, settings: { ...settings, statsSince: Date.now() - 15 * 86400000 } });
   })()`);
-  check('start focus window', (await send({ type: 'saveAuto', categories: { adult: true, social: true, gambling: true }, how: 'window', windowLength: '2h', startWindow: true })).ok);
+  const categories = { adult: { mode: 'full' }, gambling: { mode: 'full' }, social: { mode: 'window', windowLength: '2h' }, news: { mode: 'limit', limitMin: 1 } };
+  check('per-category auto mode + focus window', (await send({ type: 'saveAuto', categories, startWindow: 'social' })).ok);
 
   // Password-guarded changes.
   check('loosening a rule needs the password', (await send({ type: 'saveSite', site: site('reddit.com', { mode: 'watch' }) })).needPassword === true);
   check('removing a site needs the password', (await send({ type: 'removeSite', domain: 'youtube.com' })).needPassword === true);
   check('wrong password is rejected', (await send({ type: 'removeSite', domain: 'youtube.com', password: 'nope' })).error === 'wrong password');
-  check('turning off a running category needs the password', (await send({ type: 'saveAuto', categories: { adult: true }, how: 'window', windowLength: '2h' })).needPassword === true);
+  check('turning off a running category needs the password', (await send({ type: 'saveAuto', categories: { social: { mode: 'off' } } })).needPassword === true);
+  check('leaving "block completely" needs the password', (await send({ type: 'saveAuto', categories: { adult: { mode: 'window' } } })).needPassword === true);
+  check('tightening a category does not', (await send({ type: 'saveAuto', categories: { shopping: { mode: 'full' } } })).ok === true);
 
-  for (const view of ['stats', 'sites', 'site/reddit.com', 'auto', 'settings']) {
+  // Adding a URL in any form lands on the same normalised entry.
+  for (const typed of ['https://www.reddit.com/', 'www.reddit.com/']) {
+    await evaluate(options.sessionId, `location.hash = 'sites'`);
+    await sleep(400);
+    await evaluate(options.sessionId, `(() => { const i = document.getElementById('domain'); i.value = ${JSON.stringify(typed)}; i.form.requestSubmit(); })()`);
+    await sleep(600);
+    const landed = await evaluate(options.sessionId, `[location.hash, document.querySelector('h1').textContent, document.querySelector('.chip').textContent]`);
+    check(`add "${typed}" opens the existing reddit.com rule`, landed[0] === '#site/reddit.com' && landed[1] === 'reddit.com' && landed[2].startsWith('added'), JSON.stringify(landed));
+  }
+  check('reddit.com edit page says it overrides auto mode', await evaluate(options.sessionId,
+    `new Promise((r) => setTimeout(() => r(document.querySelector('.notice')?.textContent ?? ''), 400))`).then((t) => t.includes('overrides auto mode') && t.includes('Social feeds')));
+
+  for (const view of ['stats', 'sites', 'site/reddit.com', 'auto/social', 'settings']) {
     await evaluate(options.sessionId, `location.hash = '${view}'`);
     await sleep(500);
     await shot(options.sessionId, `options-${view.replace('/', '-')}`, 1280, view === 'stats' ? 1120 : view.startsWith('site/') ? 1000 : 860);
@@ -207,7 +244,18 @@ try {
   const tabId = tabs.find((t) => t.url.includes('blocked.html')).id;
   const popup = await open(page(`popup.html?tab=${tabId}`));
   await shot(popup.sessionId, 'popup-blocked', 360, 600);
+  check('blocked popup: no unblock button, points to the block page', await evaluate(popup.sessionId,
+    `!document.getElementById('unblock') && !document.getElementById('unlock-hint').hidden && document.getElementById('block').hidden`));
+  check('popup footer shows the current version', (await evaluate(popup.sessionId, `document.getElementById('foot-note').textContent`)).startsWith('v1.1'));
+  await evaluate(popup.sessionId, `document.getElementById('modify').click()`);
+  await sleep(800);
+  check('popup "modify view" opens the site edit page', (await cdp('Target.getTargets')).targetInfos.some((t) => t.url.endsWith('options.html#site/reddit.com')));
 
+  check('unlock form starts folded away', await evaluate(tab.sessionId, `!document.getElementById('unlock-details').open`));
+  await evaluate(tab.sessionId, `document.querySelector('#unlock-details > summary').click()`);
+  await sleep(200);
+  check('expanding shows the password field', await evaluate(tab.sessionId, `document.getElementById('unlock-details').open && document.activeElement.id === 'pw'`));
+  await shot(tab.sessionId, 'blocked-expanded');
   await evaluate(tab.sessionId, `document.getElementById('pw').value = 'wrong'; document.getElementById('unlock').click()`);
   await sleep(600);
   check('wrong password shows an error', (await evaluate(tab.sessionId, `document.getElementById('error').textContent`)) === 'wrong password');
@@ -215,6 +263,11 @@ try {
   await sleep(1500);
   url = await urlOf(tab.targetId);
   check('right password starts the cooldown', url.startsWith(page('unlocking.html')), url);
+  // A javascript: original URL never becomes the "continue" target.
+  const evil = await evaluate(tab.sessionId, `chrome.runtime.sendMessage({ type: 'startUnlock', domain: 'reddit.com', url: 'javascript:alert(1)', password: 'clearmind123' })`);
+  const evilTarget = await evaluate(tab.sessionId, `chrome.runtime.sendMessage({ type: 'getUnlock', token: ${JSON.stringify(evil.token)} }).then((u) => u.url)`);
+  check('unlock ignores a javascript: target', evil.ok && evilTarget === null, JSON.stringify(evilTarget));
+  await evaluate(tab.sessionId, `chrome.runtime.sendMessage({ type: 'cancelUnlock', token: ${JSON.stringify(evil.token)} })`);
   await shot(tab.sessionId, 'unlocking');
   await sleep(5000);
   check('cooldown finishes', await evaluate(tab.sessionId, `!document.getElementById('done').hidden`));
@@ -225,11 +278,13 @@ try {
   check('unlocked tab opens the site', /^https?:\/\/reddit\.com\/$/.test(url), url);
   check('modify view CSS injected on reddit', await evaluate(tab.sessionId, `!!document.getElementById('clearmind-modify') && document.documentElement.dataset.cmRoute === 'home'`));
 
-  await cdp('Target.closeTarget', { targetId: popup.targetId });
+  await cdp('Target.closeTarget', { targetId: popup.targetId }).catch(() => {}); // already closed by "modify view"
   const popup2 = await open(page(`popup.html?tab=${tabId}`));
   await sleep(500);
   check('popup shows the unlock', (await evaluate(popup2.sessionId, `document.getElementById('status').textContent`)) === 'UNLOCKED');
   await shot(popup2.sessionId, 'popup-unlocked', 360, 600);
+  check('unlocked popup hides the hint and offers "block this site"', await evaluate(popup2.sessionId,
+    `document.getElementById('unlock-hint').hidden && !document.getElementById('block').hidden`));
 
   const other = await open('http://reddit.com/r/popular');
   await sleep(600);
@@ -237,10 +292,12 @@ try {
   check('unlock is per tab', url.includes('blocked.html'), url);
 
   for (const [target, expect] of [
+    ['https://www.reddit.com/', 'd=reddit.com&r=limit'],
     ['http://instagram.com/', 'r=block'],
     ['http://www.pornhub.com/', 'c=adult'],
     ['http://bet365.com/', 'c=gambling'],
     ['http://tiktok.com/', 'c=social'],
+    ['http://bbc.com/', 'r=category-limit'],
   ]) {
     await cdp('Page.navigate', { url: target }, other.sessionId);
     await sleep(900);
@@ -249,12 +306,36 @@ try {
   }
   await shot(other.sessionId, 'blocked-category');
 
+  // A blocked-sites entry overrides auto mode for its domain.
+  const watchTiktok = { type: 'saveSite', site: site('tiktok.com', { mode: 'watch' }) };
+  check('override weaker than the category needs the password', (await send(watchTiktok)).needPassword === true);
+  check('override saved with the password', (await send({ ...watchTiktok, password: 'clearmind123' })).ok === true);
+  await cdp('Page.navigate', { url: 'http://tiktok.com/' }, other.sessionId);
+  await sleep(900);
+  check('watch rule overrides the social category', /^https?:\/\/tiktok\.com\/$/.test(await urlOf(other.targetId)));
+  check('a limit override of a running window needs the password', (await send({ type: 'saveSite', site: site('9gag.com', { limitMin: 1440 }) })).needPassword === true);
+  check('stricter override needs no password', (await send({ type: 'saveSite', site: site('pornhub.com', { mode: 'block', cooldownSec: 30 }) })).ok === true);
+  check('a subdomain rule cannot escape its parent without the password',
+    (await send({ type: 'saveSite', site: site('old.reddit.com', { mode: 'watch' }) })).needPassword === true);
+  await cdp('Page.navigate', { url: 'http://pornhub.com/' }, other.sessionId);
+  await sleep(900);
+  url = await urlOf(other.targetId);
+  check('site rule, not the category, blocks pornhub.com', url.includes('r=block') && !url.includes('c=adult'), url);
+
   await cdp('Page.navigate', { url: 'http://x.com/home' }, other.sessionId);
   await sleep(900);
   check('redirect rule is not applied while under the limit', /^https?:\/\/x\.com\/home$/.test(await urlOf(other.targetId)));
-  await cdp('Page.navigate', { url: 'http://news.ycombinator.com/' }, other.sessionId);
+  await cdp('Page.navigate', { url: 'http://example.org/' }, other.sessionId);
   await sleep(900);
-  check('unlisted site loads', /^https?:\/\/news\.ycombinator\.com\/$/.test(await urlOf(other.targetId)));
+  check('unlisted site loads', /^https?:\/\/example\.org\/$/.test(await urlOf(other.targetId)));
+  const otherId = (await evaluate(options.sessionId, `chrome.tabs.query({}).then(ts => ts.map(t => [t.id, t.url]))`))
+    .find(([, u]) => /example\.org/.test(u))[0];
+  const popup3 = await open(page(`popup.html?tab=${otherId}`));
+  await sleep(400);
+  await evaluate(popup3.sessionId, `document.getElementById('block').click()`);
+  await sleep(1200);
+  url = await urlOf(other.targetId);
+  check('popup "block this site" adds it and blocks the tab', url.includes('blocked.html') && url.includes('d=example.org') && url.includes('r=block'), url);
 
   check('no uncaught errors', errors.length === 0, errors.join('\n'));
 } catch (error) {

@@ -8,7 +8,12 @@ export function h(tag, attrs = {}, ...children) {
   for (const [key, value] of Object.entries(attrs ?? {})) {
     if (value === undefined || value === null || value === false) continue;
     if (key.startsWith('on')) el.addEventListener(key.slice(2), value);
-    else if (key === 'style' && typeof value === 'object') Object.assign(el.style, value);
+    else if (key === 'style' && typeof value === 'object') {
+      for (const [prop, v] of Object.entries(value)) {
+        if (prop.startsWith('--')) el.style.setProperty(prop, v);
+        else el.style[prop] = v;
+      }
+    }
     else if (key === 'dataset') Object.assign(el.dataset, value);
     else if (key in el && typeof value !== 'string') el[key] = value;
     else el.setAttribute(key, value === true ? '' : value);
@@ -64,8 +69,12 @@ export function usageTone(fraction) {
 }
 
 // Message to the background; resolves with its reply.
-export function send(type, payload = {}) {
-  return api.runtime.sendMessage({ type, ...payload });
+export async function send(type, payload = {}) {
+  try {
+    return (await api.runtime.sendMessage({ type, ...payload })) ?? { ok: false, error: 'no reply' };
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? error) };
+  }
 }
 
 export function readLocal(keys) {

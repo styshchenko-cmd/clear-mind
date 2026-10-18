@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "ClearMind",
   "short_name": "ClearMind",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Block, time-limit and tidy distracting sites. Password + cooldown to unlock. All data stays on your device.",
   "icons": {
     "16": "icons/icon-16.png",
@@ -61,7 +61,7 @@
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; style-src 'self' 'unsafe-inline'; default-src 'self'"
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; style-src 'self'; default-src 'self'"
   },
   "minimum_chrome_version": "120"
 }

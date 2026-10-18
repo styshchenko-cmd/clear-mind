@@ -26,15 +26,32 @@ export function loadList(id) {
   return loaded.get(id);
 }
 
-// The first of `ids` whose list covers host, as {category, domain}, or null.
-export async function matchCategory(host, ids) {
+// Every one of `ids` whose list covers host, as [{category, domain}].
+export async function matchCategories(host, ids) {
+  const matches = [];
   for (const id of ids) {
     const list = await loadList(id);
-    for (const candidate of suffixes(host)) {
-      if (list.has(candidate)) return { category: id, domain: candidate };
+    const domain = [...suffixes(host)].find((candidate) => list.has(candidate));
+    if (domain) matches.push({ category: id, domain });
+  }
+  return matches;
+}
+
+// How a configured site overlaps a category list: `covering` is the list entry
+// that covers the site's domain (reddit.com for old.reddit.com), and `under`
+// counts list entries inside it (news.google.com under google.com).
+export function listOverlap(domain, list) {
+  const covering = [...suffixes(domain)].find((d) => list.has(d)) ?? null;
+  let under = 0;
+  const examples = [];
+  if (!covering) {
+    for (const d of list) {
+      if (!d.endsWith('.' + domain)) continue;
+      under += 1;
+      if (examples.length < 2) examples.push(d);
     }
   }
-  return null;
+  return covering || under ? { covering, under, examples } : null;
 }
 
 export async function listSizes(ids) {

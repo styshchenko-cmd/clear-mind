@@ -13,19 +13,21 @@ servers and no analytics, and stores all data in the browser.
 - **Per-site rules**: *block* (always shows the block page), *time limit*
   (N minutes per day, resets at 00:00 local) or *watch* (track time only).
 - **Block page** with your own message, or a redirect to a URL you choose.
-- **Unlock** = password + per-site cooldown. An unlock is bound to the tab and
+- **Unlock** = password + per-site cooldown, folded away behind a `[ still need it? ]` button on the block page. An unlock is bound to the tab and
   lasts until you close the tab or until midnight, whichever comes first.
 - **Auto mode**: block whole categories (adult, social feeds, news, video &
-  streaming, shopping, gambling) with bundled domain lists, either for a
-  focus window (25 min, 2 h, until 18:00, rest of today) or always.
-  Adult and gambling are always blocked completely while switched on.
+  streaming, shopping, gambling) with bundled domain lists. Each category has
+  its own strength: off, a focus window (25 min, 2 h, until 18:00, rest of
+  today), a daily time limit shared by its sites, or blocked completely.
+  A blocked-sites entry overrides auto mode for its domain (the edit page says so);
+  an override weaker than its category asks for the password.
 - **Modify view** for reddit, YouTube, X, Instagram, Facebook and LinkedIn: hide
   feeds, Shorts/Reels, recommendations, trends, notification badges, comments; and
   optionally show the page in grayscale.
 - **Stats**: time on listed sites, blocks shown, unlocks, under-limit streak,
   per-site and per-category usage, and a 7- or 30-day chart.
-- **Password-guarded loosening**: removing a site, weakening a rule, switching off
-  a running category or "block completely", and resetting stats all ask for the password.
+- **Password-guarded loosening**: removing a site, weakening a rule, weakening a
+  category (or ending its focus window early) and resetting stats all ask for the password.
 
 ## Install (development)
 
@@ -35,7 +37,7 @@ servers and no analytics, and stores all data in the browser.
 2. Turn on *Developer mode*.
 3. Click *Load unpacked* and pick the `src/` folder (or `dist/chrome/` after a build).
 
-On first install the settings page opens: set a password there first.
+On first install a setup page opens: set your unblock password there, then read the short guide to the pages. The same guide is under *help* in the left menu.
 
 **Firefox / Zen** (build is produced, not yet tested by hand)
 
@@ -44,7 +46,7 @@ npm run build
 ```
 
 Then open `about:debugging#/runtime/this-firefox` → *Load Temporary Add-on…* →
-`dist/firefox/manifest.json`. Firefox 121 or newer is required.
+`dist/firefox/manifest.json`. Firefox 140 or newer (desktop) is required.
 
 **Safari**: planned. Convert `dist/chrome/` with `xcrun safari-web-extension-converter`.
 
@@ -105,6 +107,14 @@ PBKDF2-SHA256 hash and cannot be recovered. Stats are kept for 400 days.
 
 ## Licenses
 
-Code: MIT. Font: IBM Plex Mono, SIL OFL 1.1 (`src/styles/fonts/OFL.txt`).
+Copyright (C) 2026 Serhii Tyshchenko.
+
+ClearMind is free software: you can redistribute it and/or modify it under the terms
+of the GNU General Public License as published by the Free Software Foundation,
+either version 3 of the License, or (at your option) any later version. It is
+distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; see
+[LICENSE](LICENSE) for details.
+
+Font: IBM Plex Mono, SIL OFL 1.1 (`src/styles/fonts/OFL.txt`).
 Adult and gambling lists: [HaGeZi DNS Blocklists](https://github.com/hagezi/dns-blocklists),
-GPL-3.0. See `src/lists/SOURCES.md`.
+GPL-3.0. See `src/lists/SOURCES.md`. Privacy policy: [PRIVACY.md](PRIVACY.md).
