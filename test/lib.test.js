@@ -20,6 +20,23 @@ test('normalizeDomain accepts URLs and bare hosts', () => {
   for (const bad of ['', 'not a domain', 'foo', '-bad-.com', null]) assert.equal(normalizeDomain(bad), null);
 });
 
+test('any way of typing a site gives the same rule, for every site', () => {
+  for (const domain of ['youtube.com', 'news.ycombinator.com', 'bbc.co.uk', 'x.com', 'пример.укр']) {
+    const expected = normalizeDomain(domain);
+    const forms = [
+      `www.${domain}`, `www.${domain}/`, `http://${domain}`, `https://www.${domain}/`,
+      `HTTPS://WWW.${domain.toUpperCase()}/path?q=1#x`, `  ${domain}  `, `${domain}:443`,
+      `https://${domain}:8080/x`, `${domain}.`, `*.${domain}`, `.${domain}`, `https://user@${domain}/`,
+    ];
+    for (const form of forms) assert.equal(normalizeDomain(form), expected, form);
+    const sites = { [expected]: {} };
+    for (const url of [`https://www.${domain}/`, `http://${domain}/a`, `https://m.${domain}/`]) {
+      assert.equal(findSiteDomain(hostOf(url), sites), expected, url);
+    }
+    assert.equal(findSiteDomain(hostOf(`https://not${domain}/`), sites), null);
+  }
+});
+
 test('hostOf ignores non-web URLs', () => {
   assert.equal(hostOf('https://old.reddit.com/r/all'), 'old.reddit.com');
   assert.equal(hostOf('chrome://extensions'), null);
