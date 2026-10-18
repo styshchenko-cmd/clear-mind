@@ -55,21 +55,20 @@ async function session() {
 
 const saveSession = () => api.storage.session.set(sess);
 // Our own writes come back through storage.onChanged, possibly after newer
-// in-memory changes; count them so only outside writes refresh the cache.
-const ownWrites = {};
+// in-memory changes. Remember what we last wrote per key and ignore changes
+// carrying exactly that, so only outside writes refresh the cache. (A write
+// that changes nothing fires no event, so counting writes would drift.)
+const lastWritten = {};
 const saveLocal = (...keys) => {
-  for (const k of keys) ownWrites[k] = (ownWrites[k] ?? 0) + 1;
+  for (const k of keys) lastWritten[k] = JSON.stringify(local[k]);
   return api.storage.local.set(Object.fromEntries(keys.map((k) => [k, local[k]])));
 };
 
 api.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'local') return;
+  if (area !== 'local' || !local) return;
   for (const [key, { newValue }] of Object.entries(changes)) {
-    if (ownWrites[key]) {
-      ownWrites[key] -= 1;
-      continue;
-    }
-    if (local && key in local && newValue !== undefined) local[key] = key === 'auto' ? model.normalizeAuto(newValue) : newValue;
+    if (!(key in local) || newValue === undefined || JSON.stringify(newValue) === lastWritten[key]) continue;
+    local[key] = key === 'auto' ? model.normalizeAuto(newValue) : newValue;
   }
 });
 

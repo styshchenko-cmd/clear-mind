@@ -31,7 +31,32 @@ const profile = await mkdtemp(join(tmpdir(), 'clearmind-e2e-'));
 // throwaway self-signed certificate (the browser runs with cert errors ignored).
 execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=clearmind-test',
   '-keyout', join(profile, 'key.pem'), '-out', join(profile, 'cert.pem')], { stdio: 'ignore' });
+// A stand-in for a single-page app (reddit): the URL changes first and the
+// content is swapped a second later, either replaced or refilled in place.
+const SPA_PAGE = `<!doctype html><title>spa</title><body>
+<shreddit-feed id="feed">home feed post</shreddit-feed>
+<script>
+  window.goReplace = () => {
+    history.pushState({}, '', '/r/test/');
+    setTimeout(() => {
+      document.getElementById('feed').remove();
+      const next = document.createElement('shreddit-feed');
+      next.id = 'next';
+      next.textContent = 'subreddit post';
+      document.body.append(next);
+    }, 1000);
+  };
+  window.goReuse = () => {
+    history.pushState({}, '', '/r/reused/');
+    setTimeout(() => (document.getElementById('feed').textContent = 'subreddit post'), 500);
+  };
+</script></body>`;
+
 const respond = (req, res) => {
+  if (req.url.includes('spa=1')) {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(SPA_PAGE);
+  }
   res.writeHead(200, { 'content-type': 'text/html' });
   res.end(`<!doctype html><title>${req.headers.host}</title><body style="background:#fff"><h1>test page: ${req.headers.host}${req.url}</h1></body>`);
 };
@@ -153,8 +178,12 @@ try {
   check('extension loaded', Boolean(extId));
   const page = (path) => `chrome-extension://${extId}/pages/${path}`;
 
-  const { targetInfos } = await cdp('Target.getTargets');
-  check('setup page opened on install', targetInfos.some((t) => t.url.endsWith('options.html#setup')));
+  let setupOpened = false;
+  for (let i = 0; i < 25 && !setupOpened; i++) {
+    setupOpened = (await cdp('Target.getTargets')).targetInfos.some((t) => t.url.endsWith('options.html#setup'));
+    if (!setupOpened) await sleep(200);
+  }
+  check('setup page opened on install', setupOpened);
 
   const options = await open(page('options.html#setup'));
   await shot(options.sessionId, 'options-setup', 1280, 900);
@@ -277,6 +306,34 @@ try {
   url = await urlOf(tab.targetId);
   check('unlocked tab opens the site', /^https?:\/\/reddit\.com\/$/.test(url), url);
   check('modify view CSS injected on reddit', await evaluate(tab.sessionId, `!!document.getElementById('clearmind-modify') && document.documentElement.dataset.cmRoute === 'home'`));
+
+  // In-page navigation must not flash the hidden home feed (reddit SPA).
+  const display = (id) => evaluate(tab.sessionId, `(() => { const el = document.getElementById('${id}'); return el ? getComputedStyle(el).display : 'gone'; })()`);
+  await cdp('Page.navigate', { url: 'http://reddit.com/?spa=1' }, tab.sessionId);
+  await sleep(1200);
+  check('home feed hidden on the SPA page', (await display('feed')) === 'none');
+  await evaluate(tab.sessionId, 'goReplace()');
+  const seen = [];
+  for (let i = 0; i < 9; i++) {
+    seen.push(await display('feed'));
+    await sleep(100);
+  }
+  check('old feed stays hidden while the next page loads', seen.every((d) => d === 'none' || d === 'gone'), seen.join(','));
+  // The page's own timers are throttled in background tabs, so wait for it.
+  const shown = async (id) => {
+    for (let i = 0; i < 25; i++) {
+      if (!['none', 'gone'].includes(await display(id))) return true;
+      await sleep(200);
+    }
+    return false;
+  };
+  check("the next page's feed is shown", await shown('next'), await display('next'));
+  await cdp('Page.navigate', { url: 'http://reddit.com/?spa=1' }, tab.sessionId);
+  await sleep(1200);
+  await evaluate(tab.sessionId, 'goReuse()');
+  await sleep(250);
+  const beforeRefill = await display('feed');
+  check('a feed element reused for the next page is shown once refilled', beforeRefill === 'none' && (await shown('feed')), `${beforeRefill} -> ${await display('feed')}`);
 
   await cdp('Target.closeTarget', { targetId: popup.targetId }).catch(() => {}); // already closed by "modify view"
   const popup2 = await open(page(`popup.html?tab=${tabId}`));
