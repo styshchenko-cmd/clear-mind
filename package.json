@@ -10,5 +10,5 @@
     "e2e": "node scripts/build.mjs chrome && node scripts/e2e.mjs",
     "lists": "node scripts/fetch-lists.mjs"
   },
-  "license": "MIT"
+  "license": "GPL-3.0-or-later"
 }

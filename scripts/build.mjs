@@ -39,7 +39,7 @@ for (const [name, patch] of Object.entries(TARGETS)) {
   await rm(out, { recursive: true, force: true });
   await mkdir(out, { recursive: true });
   await cp(src, out, { recursive: true });
-  // Licences travel with every copy (MIT for the code, GPL-3.0 for the HaGeZi lists).
+  // The GPL text travels with every copy.
   await cp(`${root}LICENSE`, `${out}/LICENSE`);
   await writeFile(`${out}/manifest.json`, JSON.stringify(patch(structuredClone(base)), null, 2) + '\n');
   const zip = `${root}dist/clearmind-${name}-${base.version}.zip`;

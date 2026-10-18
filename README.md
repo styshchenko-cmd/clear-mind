@@ -107,6 +107,14 @@ PBKDF2-SHA256 hash and cannot be recovered. Stats are kept for 400 days.
 
 ## Licenses
 
-Code: MIT. Font: IBM Plex Mono, SIL OFL 1.1 (`src/styles/fonts/OFL.txt`).
+Copyright (C) 2026 Serhii Tyshchenko.
+
+ClearMind is free software: you can redistribute it and/or modify it under the terms
+of the GNU General Public License as published by the Free Software Foundation,
+either version 3 of the License, or (at your option) any later version. It is
+distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; see
+[LICENSE](LICENSE) for details.
+
+Font: IBM Plex Mono, SIL OFL 1.1 (`src/styles/fonts/OFL.txt`).
 Adult and gambling lists: [HaGeZi DNS Blocklists](https://github.com/hagezi/dns-blocklists),
 GPL-3.0. See `src/lists/SOURCES.md`. Privacy policy: [PRIVACY.md](PRIVACY.md).
