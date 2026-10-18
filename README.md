@@ -46,7 +46,7 @@ npm run build
 ```
 
 Then open `about:debugging#/runtime/this-firefox` → *Load Temporary Add-on…* →
-`dist/firefox/manifest.json`. Firefox 121 or newer is required.
+`dist/firefox/manifest.json`. Firefox 140 or newer (desktop) is required.
 
 **Safari**: planned. Convert `dist/chrome/` with `xcrun safari-web-extension-converter`.
 
@@ -109,4 +109,4 @@ PBKDF2-SHA256 hash and cannot be recovered. Stats are kept for 400 days.
 
 Code: MIT. Font: IBM Plex Mono, SIL OFL 1.1 (`src/styles/fonts/OFL.txt`).
 Adult and gambling lists: [HaGeZi DNS Blocklists](https://github.com/hagezi/dns-blocklists),
-GPL-3.0. See `src/lists/SOURCES.md`.
+GPL-3.0. See `src/lists/SOURCES.md`. Privacy policy: [PRIVACY.md](PRIVACY.md).
