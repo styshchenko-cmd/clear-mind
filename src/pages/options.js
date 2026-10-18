@@ -202,6 +202,19 @@ function viewStats() {
 
 // ---------------------------------------------------------------- blocked sites
 
+// "Social feeds" (focus window · 2 hours), for each category overlapping a site.
+const overlapNames = (overlaps) => overlaps.map((o) => `"${o.label}" (${o.rule})`).join(', ');
+
+function overlapNotice(domain, overlaps) {
+  const covered = overlaps.filter((o) => o.covering);
+  const inside = overlaps.filter((o) => !o.covering);
+  return h('div', { class: 'notice', role: 'note' },
+    h('span', { class: 'amber medium' }, 'overrides auto mode'),
+    covered.length ? h('span', {}, `${domain} is also in ${overlapNames(covered)}.`) : null,
+    inside.map((o) => h('span', {}, `${o.under} ${o.label} domain${o.under === 1 ? '' : 's'} sit under ${domain} (${o.examples.join(', ')}${o.under > o.examples.length ? ', …' : ''}).`)),
+    h('span', { class: 'caption' }, 'This entry overrides auto mode for this domain: the rule below applies instead of the category. A rule weaker than the category asks for your password.'));
+}
+
 function siteSummary(site) {
   const adapter = supportedAdapter(site.domain);
   const parts = [];
@@ -253,7 +266,8 @@ function viewSites() {
       if (result.ok) render();
     };
     return h('div', { class: 'tr', style: grid },
-      h('div', { class: 'stack g2', style: { minWidth: 0 } }, h('span', { class: 'medium wrap' }, site.domain), h('span', { class: 'caption' }, siteSummary(site))),
+      h('div', { class: 'stack g2', style: { minWidth: 0 } }, h('span', { class: 'medium wrap' }, site.domain), h('span', { class: 'caption' }, siteSummary(site)),
+        h('span', { class: 'caption amber slot', dataset: { overlap: site.domain } })),
       h('span', { class: ruleTone }, model.ruleLabel(site)),
       todayCell,
       h('div', { class: 'row g8', style: { justifyContent: 'flex-end' } },
@@ -261,6 +275,15 @@ function viewSites() {
         h('button', { type: 'button', class: 'icon-btn quiet', 'aria-label': `Remove ${site.domain}`, onclick: remove }, icon('trash'))),
       confirmHost, rowError);
   });
+
+  if (sites.length) {
+    send('getOverlaps', { domains: sites.map((s) => s.domain) }).then((r) => {
+      for (const [domain, overlaps] of Object.entries(r.overlaps ?? {})) {
+        const slot = main.querySelector(`[data-overlap="${CSS.escape(domain)}"]`);
+        if (slot && overlaps.length) slot.textContent = `overrides auto mode: ${overlaps.map((o) => o.label.toLowerCase()).join(', ')}`;
+      }
+    });
+  }
 
   return [
     pageHeader('blocked sites', `${sites.length} site${sites.length === 1 ? '' : 's'} · ${withLimits} with limits`),
@@ -278,6 +301,11 @@ function viewSite(domain) {
   const existing = data.sites[domain];
   const site = existing ? structuredClone(existing) : model.newSite(domain);
   const adapter = supportedAdapter(domain);
+  const notice = h('div', { class: 'slot' });
+  send('getOverlaps', { domains: [domain] }).then((r) => {
+    const overlaps = r.overlaps?.[domain] ?? [];
+    if (overlaps.length) notice.replaceChildren(overlapNotice(domain, overlaps));
+  });
   const error = h('p', { class: 'error', role: 'alert', style: { margin: 0 } });
   const confirmHost = h('div', { class: 'slot' });
 
@@ -350,7 +378,7 @@ function viewSite(domain) {
 
   const save = async () => {
     error.textContent = '';
-    const result = await withPassword(confirmHost, 'This loosens the rule. Enter your password to save it.',
+    const result = await withPassword(confirmHost, 'This loosens a rule (or overrides a stricter auto-mode category). Enter your password to save it.',
       (password) => send('saveSite', { site: collect(), password }), error);
     if (result.ok) location.hash = 'sites';
   };
@@ -376,6 +404,7 @@ function viewSite(domain) {
       h('div', { class: 'row wrap-row g8' },
         h('span', { class: 'chip' }, existing ? `added ${formatShortDate(existing.addedAt)}` : 'not saved yet'),
         adapter ? h('span', { class: 'chip on' }, 'modify supported') : null)),
+    notice,
     form,
   ];
 }

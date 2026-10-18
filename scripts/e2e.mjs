@@ -193,6 +193,18 @@ try {
   check('leaving "block completely" needs the password', (await send({ type: 'saveAuto', categories: { adult: { mode: 'window' } } })).needPassword === true);
   check('tightening a category does not', (await send({ type: 'saveAuto', categories: { shopping: { mode: 'full' } } })).ok === true);
 
+  // Adding a URL in any form lands on the same normalised entry.
+  for (const typed of ['https://www.reddit.com/', 'www.reddit.com/']) {
+    await evaluate(options.sessionId, `location.hash = 'sites'`);
+    await sleep(400);
+    await evaluate(options.sessionId, `(() => { const i = document.getElementById('domain'); i.value = ${JSON.stringify(typed)}; i.form.requestSubmit(); })()`);
+    await sleep(600);
+    const landed = await evaluate(options.sessionId, `[location.hash, document.querySelector('h1').textContent, document.querySelector('.chip').textContent]`);
+    check(`add "${typed}" opens the existing reddit.com rule`, landed[0] === '#site/reddit.com' && landed[1] === 'reddit.com' && landed[2].startsWith('added'), JSON.stringify(landed));
+  }
+  check('reddit.com edit page says it overrides auto mode', await evaluate(options.sessionId,
+    `new Promise((r) => setTimeout(() => r(document.querySelector('.notice')?.textContent ?? ''), 400))`).then((t) => t.includes('overrides auto mode') && t.includes('Social feeds')));
+
   for (const view of ['stats', 'sites', 'site/reddit.com', 'auto/social', 'settings']) {
     await evaluate(options.sessionId, `location.hash = '${view}'`);
     await sleep(500);
@@ -245,6 +257,7 @@ try {
   check('unlock is per tab', url.includes('blocked.html'), url);
 
   for (const [target, expect] of [
+    ['https://www.reddit.com/', 'd=reddit.com&r=limit'],
     ['http://instagram.com/', 'r=block'],
     ['http://www.pornhub.com/', 'c=adult'],
     ['http://bet365.com/', 'c=gambling'],
@@ -257,6 +270,19 @@ try {
     check(`${target} blocked (${expect})`, url.includes('blocked.html') && url.includes(expect), url);
   }
   await shot(other.sessionId, 'blocked-category');
+
+  // A blocked-sites entry overrides auto mode for its domain.
+  const watchTiktok = { type: 'saveSite', site: site('tiktok.com', { mode: 'watch' }) };
+  check('override weaker than the category needs the password', (await send(watchTiktok)).needPassword === true);
+  check('override saved with the password', (await send({ ...watchTiktok, password: 'clearmind123' })).ok === true);
+  await cdp('Page.navigate', { url: 'http://tiktok.com/' }, other.sessionId);
+  await sleep(900);
+  check('watch rule overrides the social category', /^https?:\/\/tiktok\.com\/$/.test(await urlOf(other.targetId)));
+  check('stricter override needs no password', (await send({ type: 'saveSite', site: site('pornhub.com', { mode: 'block' }) })).ok === true);
+  await cdp('Page.navigate', { url: 'http://pornhub.com/' }, other.sessionId);
+  await sleep(900);
+  url = await urlOf(other.targetId);
+  check('site rule, not the category, blocks pornhub.com', url.includes('r=block') && !url.includes('c=adult'), url);
 
   await cdp('Page.navigate', { url: 'http://x.com/home' }, other.sessionId);
   await sleep(900);

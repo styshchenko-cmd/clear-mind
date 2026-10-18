@@ -3,7 +3,7 @@
 
 import { api } from '../lib/api.js';
 import { findSiteDomain, hostOf, matchesDomain } from '../lib/domain.js';
-import { matchCategory, listSizes } from '../lib/lists.js';
+import { listOverlap, loadList, matchCategory, listSizes } from '../lib/lists.js';
 import * as model from '../lib/model.js';
 import { hashPassword, verifyPassword, MIN_PASSWORD_LENGTH } from '../lib/password.js';
 import { decide, redirectTarget, sanitizeSite } from '../lib/rules.js';
@@ -236,6 +236,18 @@ async function passwordOk(password) {
   return verifyPassword(password ?? '', local.settings.password);
 }
 
+// Categories (not switched off) whose lists overlap `domain`.
+async function categoryOverlaps(domain) {
+  const found = [];
+  for (const c of model.CATEGORIES) {
+    const config = local.auto.categories[c.id];
+    if (config.mode === 'off') continue;
+    const overlap = listOverlap(domain, await loadList(c.id));
+    if (overlap) found.push({ category: c.id, label: c.label, rule: model.categoryRuleLabel(config), ...overlap });
+  }
+  return found;
+}
+
 const needPassword = (password) => ({
   ok: false,
   needPassword: true,
@@ -408,7 +420,9 @@ const handlers = {
     });
     if (error) return { ok: false, error };
     const existing = local.sites[site.domain];
-    if (existing && model.loosens(existing, site) && !(await passwordOk(password))) return needPassword(password);
+    const overrides = (await categoryOverlaps(site.domain)).some((o) => model.overrideLoosens(site, local.auto.categories[o.category]));
+    const looser = (existing && model.loosens(existing, site)) || overrides;
+    if (looser && !(await passwordOk(password))) return needPassword(password);
     if (existing) site.addedAt = existing.addedAt;
     local.sites[site.domain] = site;
     await saveLocal('sites');
@@ -488,6 +502,14 @@ const handlers = {
     if (sess.active) sess.active.since = now;
     await saveSession();
     return { ok: true };
+  },
+
+  // { [domain]: [{category, label, rule, covering, under}] } for the given sites.
+  async getOverlaps({ domains }) {
+    await load();
+    const result = {};
+    for (const domain of domains) result[domain] = await categoryOverlaps(domain);
+    return { ok: true, overlaps: result };
   },
 
   async getListSizes() {

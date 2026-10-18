@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { findSiteDomain, hostOf, normalizeDomain } from '../src/lib/domain.js';
-import { parseList } from '../src/lib/lists.js';
-import { autoLoosens, categoryActive, defaultAuto, loosens, newSite, normalizeAuto } from '../src/lib/model.js';
+import { listOverlap, parseList } from '../src/lib/lists.js';
+import { autoLoosens, categoryActive, defaultAuto, loosens, newSite, normalizeAuto, overrideLoosens } from '../src/lib/model.js';
 import { hashPassword, verifyPassword } from '../src/lib/password.js';
 import { decide, redirectTarget, sanitizeSite } from '../src/lib/rules.js';
 import { addTime, summarize, underLimitStreak } from '../src/lib/stats.js';
@@ -11,6 +11,9 @@ import { dayKey, formatClock, formatDuration, lastDays, MINUTE, HOUR } from '../
 
 test('normalizeDomain accepts URLs and bare hosts', () => {
   assert.equal(normalizeDomain('https://www.Reddit.com/r/x?y=1'), 'reddit.com');
+  assert.equal(normalizeDomain('https://www.reddit.com/'), 'reddit.com');
+  assert.equal(normalizeDomain('www.reddit.com/'), 'reddit.com');
+  assert.equal(normalizeDomain('https://old.reddit.com/'), 'old.reddit.com');
   assert.equal(normalizeDomain('news.ycombinator.com'), 'news.ycombinator.com');
   assert.equal(normalizeDomain('  example.org:8080  '), 'example.org');
   assert.equal(normalizeDomain('localhost'), 'localhost');
@@ -22,6 +25,29 @@ test('hostOf ignores non-web URLs', () => {
   assert.equal(hostOf('chrome://extensions'), null);
   assert.equal(hostOf('chrome-extension://abc/pages/blocked.html'), null);
   assert.equal(hostOf('garbage'), null);
+});
+
+test('a reddit.com rule covers www, bare and other subdomains', () => {
+  const sites = { 'reddit.com': {} };
+  for (const url of ['https://www.reddit.com/', 'http://reddit.com/r/all', 'https://old.reddit.com/']) {
+    assert.equal(findSiteDomain(hostOf(url), sites), 'reddit.com', url);
+  }
+});
+
+test('listOverlap finds covering entries and entries inside a site', () => {
+  const list = new Set(['reddit.com', 'news.google.com', 'sport.google.com']);
+  assert.deepEqual(listOverlap('old.reddit.com', list), { covering: 'reddit.com', under: 0, examples: [] });
+  assert.deepEqual(listOverlap('google.com', list), { covering: null, under: 2, examples: ['news.google.com', 'sport.google.com'] });
+  assert.equal(listOverlap('example.org', list), null);
+});
+
+test('overrideLoosens: a site rule weaker than its category', () => {
+  const site = (mode) => ({ ...newSite('x.com'), mode });
+  assert.equal(overrideLoosens(site('block'), { mode: 'full' }), false);
+  assert.equal(overrideLoosens(site('limit'), { mode: 'full' }), true);
+  assert.equal(overrideLoosens(site('watch'), { mode: 'window' }), true);
+  assert.equal(overrideLoosens(site('limit'), { mode: 'window' }), false);
+  assert.equal(overrideLoosens(site('watch'), { mode: 'off' }), false);
 });
 
 test('findSiteDomain picks the most specific rule and respects label boundaries', () => {

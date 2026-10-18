@@ -19,6 +19,8 @@ servers and no analytics, and stores all data in the browser.
   streaming, shopping, gambling) with bundled domain lists. Each category has
   its own strength: off, a focus window (25 min, 2 h, until 18:00, rest of
   today), a daily time limit shared by its sites, or blocked completely.
+  A blocked-sites entry overrides auto mode for its domain (the edit page says so);
+  an override weaker than its category asks for the password.
 - **Modify view** for reddit, YouTube, X, Instagram, Facebook and LinkedIn: hide
   feeds, Shorts/Reels, recommendations, trends, notification badges, comments; and
   optionally show the page in grayscale.

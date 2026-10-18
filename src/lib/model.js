@@ -139,6 +139,14 @@ export function loosens(before, after) {
   return false;
 }
 
+// Whether a site rule that takes over a category's domains is weaker than the
+// category: "watch" under any blocking category, or anything short of "block"
+// under a category that is blocked completely.
+export function overrideLoosens(site, config) {
+  if (!config || config.mode === 'off' || site.mode === 'block') return false;
+  return config.mode === 'full' || site.mode === 'watch';
+}
+
 // Whether changing one category from `before` to `after` weakens it: leaving
 // "always on", lifting or raising a time limit, or ending a running focus
 // window early.
