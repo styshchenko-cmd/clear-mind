@@ -1,6 +1,6 @@
 {
   "name": "clear-mind",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "ClearMind browser extension: block, time-limit and tidy distracting sites. All data stays local.",
   "type": "module",

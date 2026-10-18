@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { findSiteDomain, hostOf, normalizeDomain } from '../src/lib/domain.js';
 import { parseList } from '../src/lib/lists.js';
-import { autoLoosens, categoryActive, defaultAuto, loosens, newSite } from '../src/lib/model.js';
+import { autoLoosens, categoryActive, defaultAuto, loosens, newSite, normalizeAuto } from '../src/lib/model.js';
 import { hashPassword, verifyPassword } from '../src/lib/password.js';
 import { decide, redirectTarget, sanitizeSite } from '../src/lib/rules.js';
 import { addTime, summarize, underLimitStreak } from '../src/lib/stats.js';
@@ -90,26 +90,58 @@ test('loosens detects weaker site rules', () => {
   assert.equal(loosens(limit, { ...limit, limitMin: 10, message: 'hi' }), false);
 });
 
-test('auto mode: forced categories, focus windows and loosening', () => {
+const autoWith = (overrides) => {
+  const auto = defaultAuto();
+  for (const [id, config] of Object.entries(overrides)) Object.assign(auto.categories[id], config);
+  return auto;
+};
+
+test('auto mode: each category has its own strength', () => {
   const now = Date.now();
-  const auto = { ...defaultAuto(), categories: { ...defaultAuto().categories, adult: true, social: true } };
+  const window = { start: now - MINUTE, end: now + HOUR };
+  const auto = autoWith({ adult: { mode: 'full' }, social: { mode: 'window', window }, news: { mode: 'limit' }, video: { mode: 'window' } });
   assert.equal(categoryActive('adult', auto, now), true);
-  assert.equal(categoryActive('social', auto, now), false);
-  const running = { ...auto, window: { start: now - MINUTE, end: now + HOUR } };
-  assert.equal(categoryActive('social', running, now), true);
-  // Turning a category off during a running window loosens; adding one doesn't.
-  assert.equal(autoLoosens(running, { ...running, categories: { ...running.categories, social: false } }, now), true);
-  assert.equal(autoLoosens(running, { ...running, categories: { ...running.categories, news: true } }, now), false);
-  // Leaving "block completely" loosens even with no window.
-  const full = { ...auto, how: 'full' };
-  assert.equal(autoLoosens(full, { ...full, how: 'window' }, now), true);
-  assert.equal(autoLoosens(auto, full, now), false);
+  assert.equal(categoryActive('social', auto, now), true);
+  assert.equal(categoryActive('news', auto, now), true);
+  assert.equal(categoryActive('video', auto, now), false, 'window not started');
+  assert.equal(categoryActive('social', auto, now + 2 * HOUR), false, 'window over');
+  assert.equal(categoryActive('shopping', auto, now), false);
+});
+
+test('auto mode: loosening is judged per category', () => {
+  const now = Date.now();
+  const running = { start: now - MINUTE, end: now + HOUR };
+  const before = autoWith({ adult: { mode: 'full' }, social: { mode: 'window', window: running }, news: { mode: 'limit', limitMin: 30 } });
+  const change = (id, config) => autoWith({ ...structuredClone(before.categories), [id]: { ...before.categories[id], ...config } });
+  assert.equal(autoLoosens(before, change('adult', { mode: 'limit' }), now), true);
+  assert.equal(autoLoosens(before, change('social', { mode: 'off', window: null }), now), true);
+  assert.equal(autoLoosens(before, change('social', { mode: 'full' }), now), false);
+  assert.equal(autoLoosens(before, change('news', { limitMin: 45 }), now), true);
+  assert.equal(autoLoosens(before, change('news', { limitMin: 15 }), now), false);
+  assert.equal(autoLoosens(before, change('video', { mode: 'full' }), now), false);
+});
+
+test('normalizeAuto upgrades the 1.0 shape', () => {
+  const window = { start: 1, end: 2 };
+  const auto = normalizeAuto({ categories: { adult: true, social: true, news: false }, how: 'window', windowLength: '25m', window });
+  assert.equal(auto.categories.adult.mode, 'full');
+  assert.deepEqual([auto.categories.social.mode, auto.categories.social.windowLength, auto.categories.social.window], ['window', '25m', window]);
+  assert.equal(auto.categories.news.mode, 'off');
+  assert.equal(auto.categories.video.mode, 'off');
+});
+
+test('decide: time-limited categories open until the shared time is used', () => {
+  const ctx = { ...base(), host: 'bbc.com', category: () => ({ category: 'news', domain: 'bbc.com', limitMin: 20 }), categoryMs: () => 5 * MINUTE };
+  assert.equal(decide(ctx).action, 'allow');
+  assert.equal(decide({ ...ctx, categoryMs: () => 20 * MINUTE }).reason, 'category-limit');
+  ctx.day.forced['bbc.com'] = true;
+  assert.equal(decide(ctx).reason, 'manual');
 });
 
 test('addTime splits spans across midnight', () => {
   const days = {};
   const midnight = new Date(2026, 9, 18).getTime();
-  addTime(days, 'reddit.com', midnight - 10 * MINUTE, midnight + 5 * MINUTE, 30);
+  addTime(days, { domain: 'reddit.com' }, midnight - 10 * MINUTE, midnight + 5 * MINUTE, 30);
   assert.equal(days['2026-10-17'].sites['reddit.com'].ms, 10 * MINUTE);
   assert.equal(days['2026-10-18'].sites['reddit.com'].ms, 5 * MINUTE);
   assert.equal(days['2026-10-18'].sites['reddit.com'].limitMin, 30);

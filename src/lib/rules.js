@@ -8,12 +8,13 @@ import { MINUTE } from './time.js';
 //   sites       configured sites
 //   day         today's Day record (usage, forced blocks)
 //   usedMs      (domain) => time used today including the running span
+//   categoryMs  (id) => same, for a time-limited category
 //   granted     (domain) => true when this tab holds an unlock for domain
-//   category    (host) => {category, domain} | null, for active categories only
+//   category    (host) => {category, domain, limitMin?} | null, active categories only
 //
 // Returns { action: 'allow' | 'block', domain, reason, site?, category? } where
-// reason is 'block' | 'limit' | 'manual' | 'category' for blocks.
-export function decide({ host, sites, day, usedMs, granted, category }) {
+// reason is 'block' | 'limit' | 'manual' | 'category' | 'category-limit' for blocks.
+export function decide({ host, sites, day, usedMs, categoryMs, granted, category }) {
   if (!host) return { action: 'allow', domain: null, reason: 'not-web' };
 
   const domain = findSiteDomain(host, sites);
@@ -29,8 +30,12 @@ export function decide({ host, sites, day, usedMs, granted, category }) {
 
   const match = category(host);
   if (match) {
-    if (granted(match.domain)) return { action: 'allow', domain: match.domain, category: match.category, reason: 'unlocked' };
-    return { action: 'block', domain: match.domain, category: match.category, reason: 'category' };
+    const base = { domain: match.domain, category: match.category };
+    if (granted(match.domain)) return { action: 'allow', ...base, reason: 'unlocked' };
+    if (day?.forced?.[match.domain]) return { action: 'block', ...base, reason: 'manual' };
+    if (!match.limitMin) return { action: 'block', ...base, reason: 'category' };
+    if (categoryMs(match.category) >= match.limitMin * MINUTE) return { action: 'block', ...base, reason: 'category-limit' };
+    return { action: 'allow', ...base, reason: 'within-limit' };
   }
   return { action: 'allow', domain: null, reason: 'unlisted' };
 }

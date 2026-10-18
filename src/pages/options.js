@@ -14,13 +14,14 @@ const sidebarFoot = document.getElementById('sidebar-foot');
 let data = await load();
 let statsRange = 'today';
 let listSizes = null;
+let autoSelected = 'adult';
 
 async function load() {
   const s = await readLocal(['settings', 'sites', 'auto', 'days']);
   return {
     settings: s.settings ?? { password: null, statsSince: Date.now() },
     sites: s.sites ?? {},
-    auto: { ...model.defaultAuto(), ...s.auto },
+    auto: model.normalizeAuto(s.auto),
     days: s.days ?? {},
   };
 }
@@ -130,19 +131,25 @@ function viewStats() {
   });
 
   const catGrid = { gridTemplateColumns: 'minmax(140px, 1.6fr) minmax(120px, 1.4fr) minmax(0, 3fr) auto' };
-  const lengthLabel = model.WINDOW_LENGTHS.find((w) => w.id === data.auto.windowLength)?.label ?? '';
   const catRows = s.categoryRows.map((row) => {
+    const { config } = row;
     let rule;
     let progress;
-    if (row.full) {
-      const days = daysBetween(row.since, now);
+    if (config.mode === 'full') {
+      const since = config.since ?? now;
+      const days = daysBetween(since, now);
       rule = h('span', { class: 'red' }, 'always on');
       progress = [bar(1, 'red', 'blocked all day'),
         h('span', { class: 'caption' }, days === 0 ? 'blocked all day · since today'
-          : `blocked all day · ${days} day${days === 1 ? '' : 's'} since ${formatShortDate(row.since)}`)];
+          : `blocked all day · ${days} day${days === 1 ? '' : 's'} since ${formatShortDate(since)}`)];
+    } else if (config.mode === 'limit') {
+      const fraction = row.ms / row.limitMs;
+      rule = h('span', { class: 'amber' }, `time limit · ${config.limitMin} min / day`);
+      progress = [bar(fraction, usageTone(fraction), 'time used'),
+        h('span', { class: 'caption' }, `${formatDuration(row.ms)} of ${formatDuration(row.limitMs)} used`)];
     } else {
-      rule = h('span', { class: 'amber' }, `focus window · ${lengthLabel}`);
-      const w = row.window;
+      rule = h('span', { class: 'amber' }, model.categoryRuleLabel(config));
+      const w = config.window;
       if (w && w.end > todayAt(0, 0, now)) {
         const elapsed = Math.min(now, w.end) - w.start;
         const running = now < w.end;
@@ -379,49 +386,96 @@ function formatCount(n) {
   return n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k` : String(n);
 }
 
-function viewAuto() {
+// The short state shown on a category card.
+function categoryBadge(config, now) {
+  if (config.mode === 'off') return '[ off ]';
+  if (config.mode === 'full') return '[ always ]';
+  if (config.mode === 'limit') return `[ ${config.limitMin}m / day ]`;
+  return model.windowRunning(config, now) ? `[ until ${formatTimeOfDay(config.window.end)} ]` : '[ window ]';
+}
+
+function viewAuto(selected) {
   const now = Date.now();
+  if (selected && model.categoryById(selected)) autoSelected = selected;
   const draft = structuredClone(data.auto);
   const error = h('p', { class: 'error', role: 'alert', style: { margin: 0 } });
   const confirmHost = h('div', { class: 'slot' });
   const onCount = h('span', {});
-  const recount = () => (onCount.textContent = `${model.CATEGORIES.filter((c) => draft.categories[c.id]).length} on`);
+  const panel = h('section', { class: 'stack g16' });
 
-  const toggles = model.CATEGORIES.map((c) => {
-    const button = h('button', {
-      type: 'button', class: 'toggle', 'aria-pressed': String(Boolean(draft.categories[c.id])),
-      onclick: () => {
-        draft.categories[c.id] = !draft.categories[c.id];
-        button.setAttribute('aria-pressed', String(draft.categories[c.id]));
-        button.querySelector('.state').textContent = draft.categories[c.id] ? '[ on ]' : '[ off ]';
-        recount();
-      },
+  const cards = model.CATEGORIES.map((c) => h('button', {
+    type: 'button', class: 'toggle', dataset: { category: c.id },
+    onclick: () => {
+      autoSelected = c.id;
+      paint();
     },
-    h('span', { class: 'stack g2' }, h('span', { class: 'medium' }, c.label), h('span', { class: 'caption' }, c.hint)),
-    h('span', { class: 'state' }, draft.categories[c.id] ? '[ on ]' : '[ off ]'));
-    return button;
-  });
-  recount();
+  },
+  h('span', { class: 'stack g2' }, h('span', { class: 'medium' }, c.label), h('span', { class: 'caption' }, c.hint)),
+  h('span', { class: 'state' })));
 
-  const select = h('select', { class: 'input', 'aria-label': 'Focus window length' },
-    model.WINDOW_LENGTHS.map((w) => h('option', {
-      value: w.id, selected: w.id === draft.windowLength, disabled: w.end(now) <= now,
-    }, w.label)));
+  function paint() {
+    for (const card of cards) {
+      const config = draft.categories[card.dataset.category];
+      card.setAttribute('aria-pressed', String(card.dataset.category === autoSelected));
+      const state = card.querySelector('.state');
+      state.textContent = categoryBadge(config, now);
+      state.classList.toggle('on', config.mode !== 'off');
+    }
+    onCount.textContent = `${model.CATEGORIES.filter((c) => draft.categories[c.id].mode !== 'off').length} on`;
+    paintPanel();
+  }
 
-  const running = data.auto.window && now < data.auto.window.end ? data.auto.window : null;
-  const how = (value) => h('input', { type: 'radio', name: 'how', value, checked: draft.how === value, style: { marginTop: '2px' } });
+  function paintPanel() {
+    const category = model.categoryById(autoSelected);
+    const config = draft.categories[category.id];
+    const saved = data.auto.categories[category.id];
+    const running = model.windowRunning(saved, now) ? saved.window : null;
+
+    const radio = (mode) => h('input', {
+      type: 'radio', name: 'how', value: mode, checked: config.mode === mode, style: { marginTop: '2px' },
+      onchange: () => {
+        config.mode = mode;
+        paint();
+      },
+    });
+    const card = (mode, title, caption, ...extra) => h('label', { class: 'option', style: { padding: '16px' } }, radio(mode),
+      h('span', { class: 'stack g10 grow', style: { minWidth: 0 } },
+        h('span', { class: 'stack g2' }, h('span', { class: 'medium' }, title), h('span', { class: 'caption' }, caption)),
+        extra));
+
+    const select = h('select', {
+      class: 'input', 'aria-label': 'Focus window length',
+      onchange: () => (config.windowLength = select.value),
+    }, model.WINDOW_LENGTHS.map((w) => h('option', { value: w.id, selected: w.id === config.windowLength, disabled: w.end(now) <= now }, w.label)));
+    const limit = h('input', {
+      type: 'number', class: 'input short', min: 1, max: 1440, value: config.limitMin, 'aria-label': 'Daily limit in minutes',
+      oninput: () => (config.limitMin = limit.value),
+    });
+
+    panel.replaceChildren(
+      sectionHead(`how hard · "${category.label}"`,
+        running ? `focus window running · until ${formatTimeOfDay(running.end)}` : `now: ${model.categoryRuleLabel(saved)}`,
+        running ? 'amber' : ''),
+      h('fieldset', { class: 'grid-auto', style: { '--min': '260px' } },
+        h('legend', { class: 'sr-only' }, `Block strength for ${category.label}`),
+        card('off', 'Off', 'not blocked'),
+        card('window', 'Block for some time', 'a focus window · unblocks itself after',
+          h('span', { class: 'row wrap-row g8' }, select,
+            h('button', { type: 'button', class: 'btn btn-primary', onclick: (e) => (e.preventDefault(), submit(category.id)) }, '[ start ]'))),
+        card('limit', 'Time limit', 'its sites share a daily allowance',
+          h('span', { class: 'row g10' }, limit, h('span', { class: 'muted' }, 'min / day'))),
+        card('full', 'Block completely', 'always on · password + cooldown to open anything',
+          h('span', { class: 'caption amber' }, 'turning this off later asks for the password too'))));
+  }
 
   const submit = async (startWindow) => {
     error.textContent = '';
-    const payload = {
-      categories: draft.categories,
-      how: document.querySelector('input[name="how"]:checked').value,
-      windowLength: select.value,
-      startWindow,
-    };
     const result = await withPassword(confirmHost, 'This loosens auto mode. Enter your password to save it.',
-      (password) => send('saveAuto', { ...payload, password }), error);
-    if (result.ok) location.hash = 'stats';
+      (password) => send('saveAuto', { categories: draft.categories, startWindow, password }), error);
+    if (result.ok) {
+      data = await load();
+      render();
+    }
   };
 
   const sizes = h('span', { class: 'caption' }, 'lists: loading…');
@@ -429,30 +483,19 @@ function viewAuto() {
   if (listSizes) showSizes(listSizes);
   else send('getListSizes').then((r) => r.ok && showSizes((listSizes = r.sizes)));
 
+  paint();
   return [
     h('div', { class: 'stack g4' },
       label('auto mode'),
       h('h1', { class: 'page-title' }, 'Block by category'),
       h('p', { class: 'muted', style: { margin: '4px 0 0', maxWidth: '640px' } },
-        'Built-in domain lists, kept on your device. Pick the categories, then how hard the block is. Sites you configured one by one keep their own rules. Adult content and gambling are always blocked completely.')),
-    h('section', { class: 'stack g16' }, sectionHead('categories', onCount), h('div', { class: 'grid-auto' }, toggles)),
-    h('section', { class: 'stack g16' },
-      sectionHead('how hard', running ? `focus window running · until ${formatTimeOfDay(running.end)}` : null, 'amber'),
-      h('fieldset', { class: 'grid-auto', style: { '--min': '300px' } },
-        h('legend', { class: 'sr-only' }, 'Block strength'),
-        h('label', { class: 'option', style: { padding: '16px' } }, how('window'),
-          h('span', { class: 'stack g10 grow', style: { minWidth: 0 } },
-            h('span', { class: 'stack g2' }, h('span', { class: 'medium' }, 'Block for some time'), h('span', { class: 'caption' }, 'a focus window · unblocks itself after')),
-            h('span', { class: 'row wrap-row g8' }, select,
-              h('button', { type: 'button', class: 'btn btn-primary', onclick: (e) => (e.preventDefault(), submit(true)) }, '[ start ]')))),
-        h('label', { class: 'option', style: { padding: '16px' } }, how('full'),
-          h('span', { class: 'stack g10 grow', style: { minWidth: 0 } },
-            h('span', { class: 'stack g2' }, h('span', { class: 'medium' }, 'Block completely'), h('span', { class: 'caption' }, 'always on · password + cooldown to open anything')),
-            h('span', { class: 'caption amber' }, 'turning this off later asks for the password too'))))),
+        'Built-in domain lists, kept on your device. Pick a category, then choose how hard it is blocked. Sites you configured one by one keep their own rules.')),
+    h('section', { class: 'stack g16' }, sectionHead('categories', onCount), h('div', { class: 'grid-auto' }, cards)),
+    panel,
     h('div', { class: 'stack g12', style: { paddingTop: '20px', borderTop: '1px solid var(--border)' } },
       confirmHost, error,
       h('div', { class: 'row wrap-row between g12' }, sizes,
-        h('button', { type: 'button', class: 'btn btn-primary', onclick: () => submit(false) }, '[ save ]'))),
+        h('button', { type: 'button', class: 'btn btn-primary', onclick: () => submit(null) }, '[ save ]'))),
   ];
 }
 
@@ -522,6 +565,7 @@ function viewSettings() {
 function route() {
   const hash = decodeURIComponent(location.hash.slice(1));
   if (hash.startsWith('site/')) return { view: 'site', domain: normalizeDomain(hash.slice(5)) };
+  if (hash.startsWith('auto/')) return { view: 'auto', category: hash.slice(5) };
   return { view: ['stats', 'sites', 'auto', 'settings'].includes(hash) ? hash : 'stats' };
 }
 
@@ -529,7 +573,7 @@ function render() {
   const r = route();
   if (r.view === 'site' && !r.domain) return void (location.hash = 'sites');
   renderSidebar(r);
-  const views = { stats: viewStats, sites: viewSites, auto: viewAuto, settings: viewSettings, site: () => viewSite(r.domain) };
+  const views = { stats: viewStats, sites: viewSites, auto: () => viewAuto(r.category), settings: viewSettings, site: () => viewSite(r.domain) };
   main.replaceChildren(...views[r.view]().filter(Boolean));
   document.title = `ClearMind · ${r.view === 'site' ? r.domain : r.view}`;
 }

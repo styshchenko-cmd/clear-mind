@@ -37,7 +37,9 @@
 </div>
 </div>
 
-<form id="unlock-form" class="stack g10" style="padding-top: 20px; border-top: 1px dashed var(--border)">
+<details id="unlock-details" class="unlock">
+<summary class="btn">[ still need it? ]</summary>
+<form id="unlock-form" class="stack g10">
 <label id="unlock-label" for="pw" style="font-size: 13px; line-height: 20px" class="muted"></label>
 <div class="row wrap-row g10">
 <input id="pw" type="password" class="input" placeholder="password" autocomplete="current-password" style="flex: 1 1 220px; width: auto; min-width: 0; font-size: 15px">
@@ -45,6 +47,7 @@
 </div>
 <p id="error" class="error" role="alert"></p>
 </form>
+</details>
 
 <div class="row wrap-row between g12" style="font-size: 13px; line-height: 20px">
 <a id="back" href="#">← back to where you were</a>

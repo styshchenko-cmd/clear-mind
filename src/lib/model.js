@@ -3,19 +3,20 @@
 // storage.local keys:
 //   settings  { password: {salt, hash, iterations} | null, passwordSetAt, statsSince, installedAt }
 //   sites     { [domain]: Site }
-//   auto      { categories: {[id]: bool}, categorySince: {[id]: time}, how: 'window' | 'full',
-//               windowLength, window: {start, end} | null, fullSince }
+//   auto      { categories: {[id]: CategoryConfig} }
 //   days      { [dayKey]: Day }
 //
 // Site = { domain, mode: 'block' | 'limit' | 'watch', limitMin, cooldownSec,
 //          show: 'message' | 'redirect', message, redirectUrl, cooldownMessage,
 //          modify: {[optionKey]: bool}, addedAt }
+// CategoryConfig = { mode: 'off' | 'window' | 'limit' | 'full', windowLength, limitMin,
+//                    window: {start, end} | null, since }
 // Day  = { sites: {[domain]: {ms, blocks, unlocks, limitMin?}},
-//          categories: {[id]: {blocks, unlocks}}, forced: {[domain]: true} }
+//          categories: {[id]: {ms, blocks, unlocks, limitMin?}}, forced: {[domain]: true} }
 
 import { HOUR, MINUTE, nextMidnight, todayAt } from './time.js';
 
-export const VERSION = '1.0';
+export const VERSION = '1.1';
 
 export const DEFAULT_MESSAGE = 'Go do the thing you opened the browser for.';
 export const DEFAULT_COOLDOWN_MESSAGE = 'Thirty seconds. What were you about to do before this?';
@@ -38,15 +39,13 @@ export function newSite(domain, now = Date.now()) {
   };
 }
 
-// `forced` categories are always blocked completely while switched on;
-// the "how hard" choice applies to the rest.
 export const CATEGORIES = [
-  { id: 'adult', label: 'Adult content', hint: 'always a block page', forced: true },
+  { id: 'adult', label: 'Adult content', hint: 'explicit & NSFW sites' },
   { id: 'social', label: 'Social feeds', hint: 'reddit, x, instagram, tiktok…' },
   { id: 'news', label: 'News', hint: 'headlines & comment sections' },
   { id: 'video', label: 'Video & streaming', hint: 'youtube, twitch, netflix…' },
   { id: 'shopping', label: 'Shopping', hint: 'marketplaces & deal sites' },
-  { id: 'gambling', label: 'Gambling', hint: 'betting & casino', forced: true },
+  { id: 'gambling', label: 'Gambling', hint: 'betting & casino' },
 ];
 
 export const categoryById = (id) => CATEGORIES.find((c) => c.id === id);
@@ -58,30 +57,69 @@ export const WINDOW_LENGTHS = [
   { id: 'today', label: 'rest of today', end: (now) => nextMidnight(now) },
 ];
 
+// Each category has its own strength:
+//   off     not blocked
+//   window  blocked during a focus window the user starts
+//   limit   the category's sites share N minutes per day
+//   full    always blocked
+export const CATEGORY_MODES = ['off', 'window', 'limit', 'full'];
+
+export function defaultCategory() {
+  return { mode: 'off', windowLength: '2h', limitMin: 30, window: null, since: null };
+}
+
 export function defaultAuto() {
-  return {
-    categories: Object.fromEntries(CATEGORIES.map((c) => [c.id, false])),
-    categorySince: {},
-    how: 'window',
-    windowLength: '2h',
-    window: null,
-    fullSince: null,
-  };
+  return { categories: Object.fromEntries(CATEGORIES.map((c) => [c.id, defaultCategory()])) };
 }
 
-export function emptyDay() {
-  return { sites: {}, categories: {}, forced: {} };
+// Fills gaps and upgrades the 1.0 shape ({categories: {id: bool}, how, window}).
+export function normalizeAuto(raw) {
+  const auto = defaultAuto();
+  for (const { id } of CATEGORIES) {
+    const value = raw?.categories?.[id];
+    if (value && typeof value === 'object') {
+      auto.categories[id] = { ...auto.categories[id], ...value };
+    } else if (value === true) {
+      const full = id === 'adult' || id === 'gambling' || raw.how === 'full';
+      auto.categories[id] = {
+        ...auto.categories[id],
+        mode: full ? 'full' : 'window',
+        windowLength: raw.windowLength ?? '2h',
+        window: full ? null : raw.window ?? null,
+        since: raw.categorySince?.[id] ?? null,
+      };
+    }
+  }
+  return auto;
 }
 
-// Whether a category's domains are blocked right now.
+export function windowRunning(config, now = Date.now()) {
+  return Boolean(config?.window && now >= config.window.start && now < config.window.end);
+}
+
+// Whether a category's domains are subject to blocking right now. A limited
+// category applies all day; its sites stay open until the shared time runs out.
 export function categoryActive(id, auto, now = Date.now()) {
-  if (!auto?.categories?.[id]) return false;
-  if (categoryById(id)?.forced || auto.how === 'full') return true;
-  return Boolean(auto.window && now >= auto.window.start && now < auto.window.end);
+  const config = auto?.categories?.[id];
+  if (!config) return false;
+  if (config.mode === 'full' || config.mode === 'limit') return true;
+  return config.mode === 'window' && windowRunning(config, now);
 }
 
 export function activeCategories(auto, now = Date.now()) {
   return CATEGORIES.filter((c) => categoryActive(c.id, auto, now)).map((c) => c.id);
+}
+
+// "always on", "30 min / day", "focus window · 2 hours", "off"
+export function categoryRuleLabel(config) {
+  if (!config || config.mode === 'off') return 'off';
+  if (config.mode === 'full') return 'always on';
+  if (config.mode === 'limit') return `${config.limitMin} min / day`;
+  return `focus window · ${WINDOW_LENGTHS.find((w) => w.id === config.windowLength)?.label ?? ''}`;
+}
+
+export function emptyDay() {
+  return { sites: {}, categories: {}, forced: {} };
 }
 
 // "30 min / day", "blocked completely", "watch only"
@@ -101,17 +139,22 @@ export function loosens(before, after) {
   return false;
 }
 
-// Category ids that block now under `before` but would not under `after`.
+// Whether changing one category from `before` to `after` weakens it: leaving
+// "always on", lifting or raising a time limit, or ending a running focus
+// window early.
+export function categoryLoosens(before, after, now = Date.now()) {
+  if (before.mode === 'full') return after.mode !== 'full';
+  if (before.mode === 'limit') {
+    if (after.mode === 'full') return false;
+    return after.mode !== 'limit' || after.limitMin > before.limitMin;
+  }
+  if (before.mode === 'window' && windowRunning(before, now)) {
+    if (after.mode === 'full') return false;
+    return after.mode !== 'window' || !after.window || after.window.end < before.window.end;
+  }
+  return false;
+}
+
 export function autoLoosens(before, after, now = Date.now()) {
-  const wasActive = (id) => categoryActive(id, before, now);
-  const willBe = (id) => {
-    if (!after.categories[id]) return false;
-    if (categoryById(id)?.forced || after.how === 'full') return true;
-    // A running focus window keeps going when "how hard" is switched.
-    return Boolean(before.window && now < before.window.end);
-  };
-  const enabledFull = (a, id) => a.categories[id] && (categoryById(id)?.forced || a.how === 'full');
-  return CATEGORIES.some(
-    (c) => (wasActive(c.id) && !willBe(c.id)) || (enabledFull(before, c.id) && !enabledFull(after, c.id)),
-  );
+  return CATEGORIES.some((c) => categoryLoosens(before.categories[c.id], after.categories[c.id], now));
 }

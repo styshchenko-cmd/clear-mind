@@ -1,6 +1,6 @@
 // Statistics: recording into Day records and summarising them for the dashboard.
 
-import { emptyDay, categoryById, CATEGORIES } from './model.js';
+import { emptyDay, CATEGORIES } from './model.js';
 import { dayKey, lastDays, nextMidnight, parseDayKey, startOfDay, MINUTE } from './time.js';
 
 export const KEEP_DAYS = 400;
@@ -11,7 +11,8 @@ function siteEntry(day, domain) {
 }
 
 function categoryEntry(day, id) {
-  day.categories[id] ??= { blocks: 0, unlocks: 0 };
+  day.categories[id] ??= { ms: 0, blocks: 0, unlocks: 0 };
+  day.categories[id].ms ??= 0;
   return day.categories[id];
 }
 
@@ -20,12 +21,14 @@ function dayOf(days, key) {
   return days[key];
 }
 
-// Adds the time between `start` and `end` to `domain`, split at midnights.
-export function addTime(days, domain, start, end, limitMin) {
+// Adds the time between `start` and `end` to a site ({domain}) or a
+// time-limited category ({category}), split at midnights.
+export function addTime(days, { domain, category }, start, end, limitMin) {
   let from = start;
   while (from < end) {
     const to = Math.min(end, nextMidnight(from));
-    const entry = siteEntry(dayOf(days, dayKey(from)), domain);
+    const day = dayOf(days, dayKey(from));
+    const entry = category ? categoryEntry(day, category) : siteEntry(day, domain);
     entry.ms += to - from;
     if (limitMin) entry.limitMin = limitMin;
     from = to;
@@ -63,6 +66,7 @@ function dayTotals(day) {
   for (const entry of Object.values(day?.categories ?? {})) {
     blocks += entry.blocks;
     unlocks += entry.unlocks;
+    if (entry.limitMin && entry.ms > entry.limitMin * MINUTE) over = true;
   }
   return { ms, blocks, unlocks, over };
 }
@@ -115,7 +119,8 @@ export function summarize({ range, days, sites, auto, settings, now = Date.now()
       perSite[domain].blocks += entry.blocks;
     }
     for (const [id, entry] of Object.entries(day?.categories ?? {})) {
-      perCategory[id] ??= { blocks: 0 };
+      perCategory[id] ??= { ms: 0, blocks: 0 };
+      perCategory[id].ms += entry.ms ?? 0;
       perCategory[id].blocks += entry.blocks;
     }
   }
@@ -130,15 +135,14 @@ export function summarize({ range, days, sites, auto, settings, now = Date.now()
     }))
     .sort((a, b) => b.ms - a.ms || a.domain.localeCompare(b.domain));
 
-  const categoryRows = CATEGORIES.filter((c) => auto.categories[c.id]).map((c) => {
-    const full = categoryById(c.id).forced || auto.how === 'full';
-    const enabledSince = auto.categorySince?.[c.id] ?? now;
+  const categoryRows = CATEGORIES.filter((c) => (auto.categories[c.id]?.mode ?? 'off') !== 'off').map((c) => {
+    const config = auto.categories[c.id];
     return {
       id: c.id,
       label: c.label,
-      full,
-      since: full ? (c.forced ? enabledSince : Math.max(enabledSince, auto.fullSince ?? 0)) : null,
-      window: full ? null : auto.window,
+      config,
+      ms: perCategory[c.id]?.ms ?? 0,
+      limitMs: config.mode === 'limit' ? config.limitMin * MINUTE * n : null,
       blocks: perCategory[c.id]?.blocks ?? 0,
     };
   });

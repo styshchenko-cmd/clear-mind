@@ -1,5 +1,4 @@
 import { api } from '../lib/api.js';
-import { ruleLabel } from '../lib/model.js';
 import { formatClock, MINUTE } from '../lib/time.js';
 import { bar, icon, optionsUrl, send, supportedAdapter, usageTone } from '../lib/ui.js';
 
@@ -21,17 +20,16 @@ let state = await send('getPopupState', { tabId: tab.id });
 let ticker = null;
 
 function renderUsage(usedMs) {
-  const site = state.site;
-  $('usage').hidden = !site || site.mode === 'block';
-  if ($('usage').hidden) return;
+  const usage = state.usage;
+  $('usage').hidden = !usage;
+  if (!usage) return;
   $('used').textContent = formatClock(usedMs);
-  const limited = site.mode === 'limit';
-  $('left-row').hidden = !limited;
+  $('left-row').hidden = !usage.limitMin;
   $('usage-bar').replaceChildren();
-  if (limited) {
-    const limitMs = site.limitMin * MINUTE;
+  if (usage.limitMin) {
+    const limitMs = usage.limitMin * MINUTE;
     const fraction = usedMs / limitMs;
-    $('usage-bar').append(bar(fraction, usageTone(fraction) || 'amber', `${Math.floor(usedMs / MINUTE)} of ${site.limitMin} minutes used`));
+    $('usage-bar').append(bar(fraction, usageTone(fraction) || 'amber', `${Math.floor(usedMs / MINUTE)} of ${usage.limitMin} minutes used`));
     $('left').textContent = formatClock(limitMs - usedMs);
   }
 }
@@ -51,13 +49,13 @@ function render() {
   $('not-web').hidden = true;
   $('status').textContent = blocked ? 'BLOCKED' : state.unlocked ? 'UNLOCKED' : 'ALLOWED';
   $('status').className = `strong ${blocked ? 'red' : state.unlocked ? 'amber' : 'green'}`;
-  $('rule').textContent = state.site ? ruleLabel(state.site) : state.category ? state.category : 'none';
+  $('rule').textContent = state.rule;
 
-  renderUsage(state.usedMs);
+  renderUsage(state.usage?.usedMs ?? 0);
   // Count up locally while the popup is open; the background keeps the real total.
-  if (state.site && state.site.mode !== 'block' && !blocked) {
+  if (state.usage && !blocked) {
     const opened = Date.now();
-    ticker = setInterval(() => renderUsage(state.usedMs + (Date.now() - opened)), 1000);
+    ticker = setInterval(() => renderUsage(state.usage.usedMs + (Date.now() - opened)), 1000);
   }
 
   $('unblock').hidden = !blocked;

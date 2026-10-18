@@ -13,19 +13,19 @@ servers and no analytics, and stores all data in the browser.
 - **Per-site rules**: *block* (always shows the block page), *time limit*
   (N minutes per day, resets at 00:00 local) or *watch* (track time only).
 - **Block page** with your own message, or a redirect to a URL you choose.
-- **Unlock** = password + per-site cooldown. An unlock is bound to the tab and
+- **Unlock** = password + per-site cooldown, folded away behind a `[ still need it? ]` button on the block page. An unlock is bound to the tab and
   lasts until you close the tab or until midnight, whichever comes first.
 - **Auto mode**: block whole categories (adult, social feeds, news, video &
-  streaming, shopping, gambling) with bundled domain lists, either for a
-  focus window (25 min, 2 h, until 18:00, rest of today) or always.
-  Adult and gambling are always blocked completely while switched on.
+  streaming, shopping, gambling) with bundled domain lists. Each category has
+  its own strength: off, a focus window (25 min, 2 h, until 18:00, rest of
+  today), a daily time limit shared by its sites, or blocked completely.
 - **Modify view** for reddit, YouTube, X, Instagram, Facebook and LinkedIn: hide
   feeds, Shorts/Reels, recommendations, trends, notification badges, comments; and
   optionally show the page in grayscale.
 - **Stats**: time on listed sites, blocks shown, unlocks, under-limit streak,
   per-site and per-category usage, and a 7- or 30-day chart.
-- **Password-guarded loosening**: removing a site, weakening a rule, switching off
-  a running category or "block completely", and resetting stats all ask for the password.
+- **Password-guarded loosening**: removing a site, weakening a rule, weakening a
+  category (or ending its focus window early) and resetting stats all ask for the password.
 
 ## Install (development)
 

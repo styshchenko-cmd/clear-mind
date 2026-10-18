@@ -178,19 +178,22 @@ try {
     const min = 60000, days = {};
     [62, 48, 140, 70, 55, 80].forEach((m, i) => days[key(6 - i)] = { sites: { 'reddit.com': { ms: m * min * 0.4, blocks: 1, unlocks: 0, limitMin: 30 }, 'youtube.com': { ms: m * min * 0.6, blocks: 0, unlocks: i === 2 ? 1 : 0, limitMin: 60 } }, categories: {}, forced: {} });
     days[key(4)].sites['reddit.com'].ms = 45 * min;
-    days[key(0)] = { sites: { 'reddit.com': { ms: 31 * min, blocks: 2, unlocks: 0, limitMin: 30 }, 'x.com': { ms: 12 * min, blocks: 0, unlocks: 0, limitMin: 20 }, 'youtube.com': { ms: 30 * min, blocks: 0, unlocks: 0, limitMin: 60 }, 'instagram.com': { ms: 0, blocks: 3, unlocks: 0 } }, categories: { social: { blocks: 4, unlocks: 0 } }, forced: {} };
+    days[key(0)] = { sites: { 'reddit.com': { ms: 31 * min, blocks: 2, unlocks: 0, limitMin: 30 }, 'x.com': { ms: 12 * min, blocks: 0, unlocks: 0, limitMin: 20 }, 'youtube.com': { ms: 30 * min, blocks: 0, unlocks: 0, limitMin: 60 }, 'instagram.com': { ms: 0, blocks: 3, unlocks: 0 } }, categories: { social: { blocks: 4, unlocks: 0 }, news: { ms: 2 * min, blocks: 0, unlocks: 0, limitMin: 1 } }, forced: {} };
     const { settings } = await chrome.storage.local.get('settings');
     await chrome.storage.local.set({ days, settings: { ...settings, statsSince: Date.now() - 15 * 86400000 } });
   })()`);
-  check('start focus window', (await send({ type: 'saveAuto', categories: { adult: true, social: true, gambling: true }, how: 'window', windowLength: '2h', startWindow: true })).ok);
+  const categories = { adult: { mode: 'full' }, gambling: { mode: 'full' }, social: { mode: 'window', windowLength: '2h' }, news: { mode: 'limit', limitMin: 1 } };
+  check('per-category auto mode + focus window', (await send({ type: 'saveAuto', categories, startWindow: 'social' })).ok);
 
   // Password-guarded changes.
   check('loosening a rule needs the password', (await send({ type: 'saveSite', site: site('reddit.com', { mode: 'watch' }) })).needPassword === true);
   check('removing a site needs the password', (await send({ type: 'removeSite', domain: 'youtube.com' })).needPassword === true);
   check('wrong password is rejected', (await send({ type: 'removeSite', domain: 'youtube.com', password: 'nope' })).error === 'wrong password');
-  check('turning off a running category needs the password', (await send({ type: 'saveAuto', categories: { adult: true }, how: 'window', windowLength: '2h' })).needPassword === true);
+  check('turning off a running category needs the password', (await send({ type: 'saveAuto', categories: { social: { mode: 'off' } } })).needPassword === true);
+  check('leaving "block completely" needs the password', (await send({ type: 'saveAuto', categories: { adult: { mode: 'window' } } })).needPassword === true);
+  check('tightening a category does not', (await send({ type: 'saveAuto', categories: { shopping: { mode: 'full' } } })).ok === true);
 
-  for (const view of ['stats', 'sites', 'site/reddit.com', 'auto', 'settings']) {
+  for (const view of ['stats', 'sites', 'site/reddit.com', 'auto/social', 'settings']) {
     await evaluate(options.sessionId, `location.hash = '${view}'`);
     await sleep(500);
     await shot(options.sessionId, `options-${view.replace('/', '-')}`, 1280, view === 'stats' ? 1120 : view.startsWith('site/') ? 1000 : 860);
@@ -208,6 +211,11 @@ try {
   const popup = await open(page(`popup.html?tab=${tabId}`));
   await shot(popup.sessionId, 'popup-blocked', 360, 600);
 
+  check('unlock form starts folded away', await evaluate(tab.sessionId, `!document.getElementById('unlock-details').open`));
+  await evaluate(tab.sessionId, `document.querySelector('#unlock-details > summary').click()`);
+  await sleep(200);
+  check('expanding shows the password field', await evaluate(tab.sessionId, `document.getElementById('unlock-details').open && document.activeElement.id === 'pw'`));
+  await shot(tab.sessionId, 'blocked-expanded');
   await evaluate(tab.sessionId, `document.getElementById('pw').value = 'wrong'; document.getElementById('unlock').click()`);
   await sleep(600);
   check('wrong password shows an error', (await evaluate(tab.sessionId, `document.getElementById('error').textContent`)) === 'wrong password');
@@ -241,6 +249,7 @@ try {
     ['http://www.pornhub.com/', 'c=adult'],
     ['http://bet365.com/', 'c=gambling'],
     ['http://tiktok.com/', 'c=social'],
+    ['http://bbc.com/', 'r=category-limit'],
   ]) {
     await cdp('Page.navigate', { url: target }, other.sessionId);
     await sleep(900);
@@ -252,9 +261,9 @@ try {
   await cdp('Page.navigate', { url: 'http://x.com/home' }, other.sessionId);
   await sleep(900);
   check('redirect rule is not applied while under the limit', /^https?:\/\/x\.com\/home$/.test(await urlOf(other.targetId)));
-  await cdp('Page.navigate', { url: 'http://news.ycombinator.com/' }, other.sessionId);
+  await cdp('Page.navigate', { url: 'http://example.org/' }, other.sessionId);
   await sleep(900);
-  check('unlisted site loads', /^https?:\/\/news\.ycombinator\.com\/$/.test(await urlOf(other.targetId)));
+  check('unlisted site loads', /^https?:\/\/example\.org\/$/.test(await urlOf(other.targetId)));
 
   check('no uncaught errors', errors.length === 0, errors.join('\n'));
 } catch (error) {
