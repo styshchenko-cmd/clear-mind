@@ -4,7 +4,7 @@
 //   node scripts/build.mjs            all browsers
 //   node scripts/build.mjs firefox    one browser
 
-import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -43,7 +43,10 @@ for (const [name, patch] of Object.entries(TARGETS)) {
   await cp(`${root}LICENSE`, `${out}/LICENSE`);
   await writeFile(`${out}/manifest.json`, JSON.stringify(patch(structuredClone(base)), null, 2) + '\n');
   const zip = `${root}dist/clearmind-${name}-${base.version}.zip`;
-  await rm(zip, { force: true });
+  // Only the current version's archive is kept.
+  for (const file of await readdir(`${root}dist`)) {
+    if (file.startsWith(`clearmind-${name}-`) && file.endsWith('.zip')) await rm(`${root}dist/${file}`);
+  }
   try {
     execFileSync('zip', ['-qr', zip, '.'], { cwd: out });
     console.log(`${name}: dist/${name}/ and ${zip.slice(root.length)}`);
